@@ -1,0 +1,157 @@
+import { describe, expect, it } from 'vitest'
+import * as Y from 'yjs'
+import {
+  alignNodes,
+  childrenOf,
+  createNode,
+  distributeNodes,
+  domLayout,
+  getNodesMap,
+  groupNodes,
+  motionCss,
+  NODE_DEFAULTS,
+  nodeCss,
+  pasteNodes,
+  readNode,
+  SceneStore,
+  serializeNodes,
+  snapRect,
+  snapTargets,
+  subtreeStylesheet,
+  type NodeId,
+  type NodePatch,
+  type SceneNode,
+} from '../src'
+
+function add(store: SceneStore, props: NodePatch, parentId: NodeId | null = null, type: 'rect' | 'frame' = 'rect') {
+  return createNode(store, { type, parentId, props })
+}
+
+describe('normalization of stored effects and motion', () => {
+  it('replaces malformed values instead of passing them to the renderer', () => {
+    const doc = new Y.Doc()
+    const nodes = getNodesMap(doc)
+    const y = new Y.Map<unknown>()
+    y.set('id', 'a')
+    y.set('type', 'rect')
+    y.set('hover', { scale: 'big', opacity: 2, fill: 'red' })
+    y.set('constructor', 1)
+    y.set('appear', 'yes')
+    y.set('transition', { duration: -5, easing: 'bogus' })
+    y.set('link', { target: 42 })
+    y.set('shadow', { x: 2, color: 'nope' })
+    nodes.set('a', y)
+
+    const node = readNode(nodes.get('a')!)!
+    expect(node.hover).toEqual({ opacity: 1 })
+    expect(node.appear).toBeNull()
+    expect(node.transition).toEqual({ duration: 0, delay: 0, easing: 'ease-out' })
+    expect(node.link).toBeNull()
+    expect(node.shadow).toEqual({ x: 2, y: 4, blur: 12, color: '#1A181433' })
+    expect(Object.hasOwn(node, 'constructor')).toBe(false)
+  })
+})
+
+describe('align and distribute', () => {
+  it('aligns a selection to its shared bounds', () => {
+    const store = new SceneStore()
+    const a = add(store, { x: 0, y: 0, width: 10, height: 10 })
+    const b = add(store, { x: 50, y: 20, width: 20, height: 20 })
+    const c = add(store, { x: 10, y: 80, width: 10, height: 10 })
+    alignNodes(store, [a, b, c], 'left')
+    alignNodes(store, [a, b, c], 'bottom')
+    const n = (id: NodeId) => store.getNode(id)!
+    expect([n(a).x, n(b).x, n(c).x]).toEqual([0, 0, 0])
+    expect([n(a).y, n(b).y, n(c).y]).toEqual([80, 70, 80])
+  })
+
+  it('centers a single node inside its parent frame', () => {
+    const store = new SceneStore()
+    const frame = add(store, { x: 100, y: 100, width: 200, height: 100 }, null, 'frame')
+    const r = add(store, { x: 10, y: 10, width: 20, height: 20 }, frame)
+    alignNodes(store, [r], 'center')
+    expect(store.getNode(r)!.x).toBe(90)
+  })
+
+  it('spreads three nodes into equal gaps', () => {
+    const store = new SceneStore()
+    const a = add(store, { x: 0, y: 0, width: 10, height: 10 })
+    const b = add(store, { x: 15, y: 0, width: 10, height: 10 })
+    const c = add(store, { x: 90, y: 0, width: 10, height: 10 })
+    distributeNodes(store, [c, a, b], 'horizontal')
+    expect(store.getNode(b)!.x).toBe(45)
+  })
+})
+
+describe('smart guides', () => {
+  it('snaps an edge to a sibling within the threshold and reports the guide', () => {
+    const store = new SceneStore()
+    add(store, { x: 100, y: 0, width: 50, height: 50 })
+    const moving = add(store, { x: 47, y: 70, width: 50, height: 20 })
+    const targets = snapTargets(store.getSnapshot(), [null], new Set([moving]))
+    const result = snapRect({ x: 47, y: 70, width: 50, height: 20 }, targets, 5)
+    expect(result.dx).toBe(3)
+    expect(result.dy).toBe(0)
+    expect(result.guides).toEqual([{ axis: 'x', value: 100, start: 0, end: 90 }])
+  })
+})
+
+describe('scene → CSS', () => {
+  it('converts a top-left rotation pivot into a centered CSS rotation', () => {
+    const store = new SceneStore()
+    const r = add(store, { x: 10, y: 20, width: 100, height: 50, rotation: 90 })
+    expect(domLayout(store.getSnapshot(), r)).toEqual({ left: -65, top: 45, width: 100, height: 50, rotation: 90 })
+  })
+
+  it('draws strokes as inset shadows after the drop shadow', () => {
+    const node = {
+      ...NODE_DEFAULTS.rect,
+      id: 'r',
+      name: 'r',
+      parentId: null,
+      index: 'a0',
+      stroke: '#000000',
+      strokeWidth: 2,
+      shadow: { x: 0, y: 4, blur: 12, color: '#1A181433' },
+    } as SceneNode
+    const css = nodeCss(node, { left: 0, top: 0, width: 10, height: 10, rotation: 0 })
+    expect(css['box-shadow']).toBe('0px 4px 12px #1A181433, inset 0 0 0 2px #000000')
+  })
+
+  it('offsets children of a group wrapper by the wrapper corner', () => {
+    const store = new SceneStore()
+    const frame = add(store, { width: 400, height: 300 }, null, 'frame')
+    const r1 = add(store, { x: 30, y: 40, width: 10, height: 10 }, frame)
+    const r2 = add(store, { x: 60, y: 40, width: 10, height: 10 }, frame)
+    const g = groupNodes(store, [r1, r2])!
+    const sheet = subtreeStylesheet(store.getSnapshot(), frame, (id) => `n-${id}`)
+    expect(sheet).toContain(`.n-${g}{position:absolute;left:30px;top:40px;width:40px;height:10px`)
+    expect(sheet).toContain(`.n-${r2}{position:absolute;left:30px;top:0px;`)
+  })
+
+  it('chains a loop after the appear animation', () => {
+    const node = {
+      ...NODE_DEFAULTS.rect,
+      appear: { preset: 'slide-up', duration: 600, delay: 100, easing: 'ease-out', distance: 24 },
+      loop: { preset: 'float', duration: 3000, easing: 'ease-in-out' },
+    } as SceneNode
+    expect(motionCss(node)).toEqual({
+      '--cf-distance': '24px',
+      animation:
+        'cf-appear-slide-up 600ms cubic-bezier(0, 0, 0.2, 1) 100ms backwards, cf-loop-float 3000ms cubic-bezier(0.4, 0, 0.2, 1) 700ms infinite',
+    })
+  })
+})
+
+describe('prototype links', () => {
+  it('re-points links between frames that are pasted together', () => {
+    const store = new SceneStore()
+    const home = add(store, { width: 100, height: 100 }, null, 'frame')
+    const about = add(store, { x: 200, width: 100, height: 100 }, null, 'frame')
+    add(store, { link: { target: about, transition: 'dissolve', duration: 300, easing: 'ease-out' } }, home)
+    const [homeCopy, aboutCopy] = pasteNodes(store, serializeNodes(store.getSnapshot(), [home, about]), null)
+    const snap = store.getSnapshot()
+    const button = snap.nodes.get(childrenOf(snap, homeCopy)[0])!
+    expect(button.link?.target).toBe(aboutCopy)
+  })
+})

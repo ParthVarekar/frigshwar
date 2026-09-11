@@ -1,0 +1,17 @@
+{
+  "name": "@codeframe/library",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "sync": "node ../../scripts/sync-shadcn.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@codeframe/scene": "*"
+  }
+}

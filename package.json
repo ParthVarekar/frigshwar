@@ -1,0 +1,21 @@
+{
+  "name": "codeframe",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n web,sync -c yellow,red \"npm run dev -w @codeframe/web\" \"npm run dev -w @codeframe/server\"",
+    "dev:web": "npm run dev -w @codeframe/web",
+    "dev:server": "npm run dev -w @codeframe/server",
+    "build": "npm run build -w @codeframe/web",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}

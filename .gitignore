@@ -1,0 +1,19 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+!.env.example
+
+# local sync-server data
+apps/server/data/
+
+# logs & OS/editor noise
+*.log
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea
+coverage
