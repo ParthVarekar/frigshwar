@@ -42,11 +42,12 @@ where we stand) and [architecture.md](architecture.md) (how the code fits togeth
 - Copy/cut/paste with a cascading offset and cross-tab JSON clipboard.
 - `startup.bat` / `shutdown.bat`.
 
-### Not committed
+### Where the code lives
 
-Everything after the `initialization` commit is uncommitted working tree (library, export
-dialog, copy/paste, link drag, and everything in the current effort). Commit before moving
-machines: `git add -A && git commit`.
+GitHub: https://github.com/ParthVarekar/frigshwar. Work through M4a (library, export dialog,
+copy/paste, motion v2, timeline, auto layout) is on branch `motion-v2-auto-layout` (pushed
+2026-09-12, not merged into `main` yet). Continue on that branch, or merge it first. Commit and
+push before moving machines.
 
 ---
 
