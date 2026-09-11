@@ -44,10 +44,9 @@ where we stand) and [architecture.md](architecture.md) (how the code fits togeth
 
 ### Where the code lives
 
-GitHub: https://github.com/ParthVarekar/frigshwar. Work through M4a (library, export dialog,
-copy/paste, motion v2, timeline, auto layout) is on branch `motion-v2-auto-layout` (pushed
-2026-09-12, not merged into `main` yet). Continue on that branch, or merge it first. Commit and
-push before moving machines.
+GitHub: https://github.com/ParthVarekar/frigshwar, branch `main`. Everything through M4a
+(library, export dialog, copy/paste, motion v2, timeline, auto layout) was pushed on
+2026-09-12. The user commits straight to `main`. Commit and push before moving machines.
 
 ---
 
