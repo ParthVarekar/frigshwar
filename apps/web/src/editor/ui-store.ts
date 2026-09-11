@@ -7,6 +7,17 @@ export type Tool = 'select' | 'hand' | 'frame' | 'rect' | 'ellipse' | 'text'
 
 export type PanelTab = 'design' | 'animate'
 
+export type LeftTab = 'layers' | 'library'
+
+/** A prototype link being dragged out of a layer's connection handle. */
+export interface LinkDraft {
+  from: NodeId
+  /** World point under the pointer. */
+  to: Point
+  /** Canvas-level frame the link would connect to. */
+  target: NodeId | null
+}
+
 /** screen = world · zoom + (x, y) */
 export interface Viewport {
   x: number
@@ -45,6 +56,9 @@ interface UIState {
   panelTab: PanelTab
   preview: { frameId: NodeId } | null
   contextMenu: ContextMenuState | null
+  leftTab: LeftTab
+  linkDraft: LinkDraft | null
+  exportOpen: boolean
 
   setTool: (tool: Tool) => void
   setSelection: (ids: NodeId[]) => void
@@ -61,6 +75,9 @@ interface UIState {
   setPanelTab: (tab: PanelTab) => void
   setPreview: (preview: { frameId: NodeId } | null) => void
   setContextMenu: (menu: ContextMenuState | null) => void
+  setLeftTab: (tab: LeftTab) => void
+  setLinkDraft: (draft: LinkDraft | null) => void
+  setExportOpen: (open: boolean) => void
 }
 
 export const useUI = create<UIState>()((set) => ({
@@ -78,6 +95,9 @@ export const useUI = create<UIState>()((set) => ({
   panelTab: 'design',
   preview: null,
   contextMenu: null,
+  leftTab: 'layers',
+  linkDraft: null,
+  exportOpen: false,
 
   setTool: (tool) => set({ tool }),
   setSelection: (ids) => set((s) => (sameIds(s.selection, ids) ? s : { selection: ids })),
@@ -104,6 +124,9 @@ export const useUI = create<UIState>()((set) => ({
   setPanelTab: (panelTab) => set({ panelTab }),
   setPreview: (preview) => set({ preview, contextMenu: null, hoverId: null }),
   setContextMenu: (contextMenu) => set({ contextMenu }),
+  setLeftTab: (leftTab) => set({ leftTab }),
+  setLinkDraft: (linkDraft) => set({ linkDraft }),
+  setExportOpen: (exportOpen) => set({ exportOpen, contextMenu: null }),
 }))
 
 function sameIds(a: readonly NodeId[], b: readonly NodeId[]) {

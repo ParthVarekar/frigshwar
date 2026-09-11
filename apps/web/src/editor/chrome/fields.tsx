@@ -78,8 +78,14 @@ export function NumberField(props: {
   scale?: number
   suffix?: string
   title?: string
+  /** Read-only, e.g. a position set by auto layout. */
+  disabled?: boolean
+  /** Shown when the value is `null`. Defaults to "Mixed". */
+  placeholder?: string
+  /** Makes an emptied field clear the value (optional limits). */
+  onClear?: () => void
 }) {
-  const { label, value, onChange, min = -Infinity, max = Infinity, step = 1, precision = 2, scale = 1, suffix, title } = props
+  const { label, value, onChange, min = -Infinity, max = Infinity, step = 1, precision = 2, scale = 1, suffix, title, disabled, onClear } = props
   const [draft, setDraft] = useState<string | null>(null)
   const cancelled = useRef(false)
   const shown = value === null ? '' : formatNumber(value * scale, precision)
@@ -91,6 +97,10 @@ export function NumberField(props: {
       cancelled.current = false
       return
     }
+    if (onClear && text.trim() === '') {
+      if (value !== null) onClear()
+      return
+    }
     const parsed = Number.parseFloat(text)
     if (!Number.isFinite(parsed)) return
     const next = clamp(parsed / scale)
@@ -99,7 +109,7 @@ export function NumberField(props: {
 
   // Drag the label to scrub; Shift for ×10. One undo step per scrub.
   const scrub = (e: ReactPointerEvent<HTMLSpanElement>) => {
-    if (e.button !== 0) return
+    if (e.button !== 0 || disabled) return
     e.preventDefault()
     const startX = e.clientX
     const start = (value ?? 0) * scale
@@ -121,17 +131,20 @@ export function NumberField(props: {
   }
 
   return (
-    <label className={RULED} title={title}>
-      <span onPointerDown={scrub} className="smallcaps min-w-4 shrink-0 cursor-ew-resize text-ink-3 select-none">
+    <label className={`${RULED} ${disabled ? 'border-dotted hover:border-rule' : ''}`} title={title}>
+      <span onPointerDown={scrub} className={`smallcaps min-w-4 shrink-0 text-ink-3 select-none ${disabled ? '' : 'cursor-ew-resize'}`}>
         {label}
       </span>
       <input
         inputMode="decimal"
         spellCheck={false}
-        className="min-w-0 flex-1 bg-transparent font-mono text-data text-ink outline-none placeholder:text-ink-3"
+        readOnly={disabled}
+        aria-label={title ?? label}
+        className={`min-w-0 flex-1 bg-transparent font-mono text-data outline-none placeholder:text-ink-3 ${disabled ? 'text-ink-3' : 'text-ink'}`}
         value={draft ?? shown}
-        placeholder={value === null ? 'Mixed' : undefined}
+        placeholder={value === null ? (props.placeholder ?? 'Mixed') : undefined}
         onFocus={(e) => {
+          if (disabled) return
           setDraft(shown)
           const input = e.currentTarget
           requestAnimationFrame(() => input.select())
@@ -143,7 +156,7 @@ export function NumberField(props: {
           else if (e.key === 'Escape') {
             cancelled.current = true
             e.currentTarget.blur()
-          } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !disabled) {
             e.preventDefault()
             const base = Number.parseFloat(e.currentTarget.value)
             const current = Number.isFinite(base) ? base : (value ?? 0) * scale
@@ -158,7 +171,59 @@ export function NumberField(props: {
   )
 }
 
-const CHECKER = 'repeating-conic-gradient(#d9d2c3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px'
+/** A labelled text value, committed on Enter or blur (Ctrl/Cmd+Enter when multiline). */
+export function TextField(props: { label: string; value: string | null; onChange: (value: string) => void; multiline?: boolean }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const cancelled = useRef(false)
+  const commit = (text: string) => {
+    setDraft(null)
+    if (cancelled.current) {
+      cancelled.current = false
+      return
+    }
+    if (text !== props.value) props.onChange(text)
+  }
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (!props.multiline || e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      e.currentTarget.blur()
+    } else if (e.key === 'Escape') {
+      cancelled.current = true
+      e.currentTarget.blur()
+    }
+  }
+  const common = {
+    'aria-label': props.label,
+    spellCheck: false,
+    value: draft ?? props.value ?? '',
+    placeholder: props.value === null ? 'Mixed' : undefined,
+    onFocus: () => setDraft(props.value ?? ''),
+    onKeyDown,
+  }
+  return (
+    <label className="flex flex-col border-b border-rule pt-1.5 pb-1 transition-colors hover:border-ink-3 focus-within:border-pencil">
+      <span className="smallcaps text-ink-3">{props.label}</span>
+      {props.multiline ? (
+        <textarea
+          {...common}
+          rows={3}
+          className="resize-none bg-transparent text-ui leading-snug outline-none placeholder:text-ink-3"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={(e) => commit(e.target.value)}
+        />
+      ) : (
+        <input
+          {...common}
+          className="h-6 bg-transparent text-ui outline-none placeholder:text-ink-3"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={(e) => commit(e.target.value)}
+        />
+      )}
+    </label>
+  )
+}
+
+const CHECKER ='repeating-conic-gradient(#d9d2c3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px'
 
 function normalizeHex(text: string): string | null {
   let hex = text.trim().replace(/^#/, '')
@@ -316,7 +381,14 @@ export function Toggle(props: { label: string; checked: boolean | null; onChange
 }
 
 /** Floats beside an anchor; closes on outside press or Escape. Letterpress shadow, no blur. */
-export function Popover(props: { anchor: HTMLElement | null; onClose: () => void; children: ReactNode; className?: string }) {
+export function Popover(props: {
+  anchor: HTMLElement | null
+  onClose: () => void
+  children: ReactNode
+  className?: string
+  /** Room to keep below the popover's top edge before the window's bottom. */
+  height?: number
+}) {
   const { anchor, onClose } = props
   const panel = useRef<HTMLDivElement>(null)
   const close = useRef(onClose)
@@ -346,7 +418,7 @@ export function Popover(props: { anchor: HTMLElement | null; onClose: () => void
   const rect = anchor.getBoundingClientRect()
   const style: CSSProperties = {
     position: 'fixed',
-    top: Math.min(rect.bottom + 6, window.innerHeight - 280),
+    top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - (props.height ?? 280))),
     left: rect.right,
     transform: 'translateX(-100%)',
   }

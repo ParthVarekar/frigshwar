@@ -6,6 +6,7 @@ import {
   multiply,
   parentOf,
   patchesForBox,
+  pinSizing,
   selectionBounds,
   snapPoint,
   snapTargets,
@@ -19,12 +20,15 @@ import {
   type SceneSnapshot,
   type SnapTargets,
 } from '@codeframe/scene'
+import { getSpec } from '@codeframe/library'
 import type Konva from 'konva'
 import { useLayoutEffect, useRef, useState } from 'react'
+import { constrainComponentPatches } from '../library'
 import { Circle, Group, Label, Layer, Line, Rect, Shape, Tag, Text, Transformer } from 'react-konva'
 import { useScene, useSceneStore } from '../scene-context'
 import { adjustTextResize } from '../edits'
 import { INK, INK_2, MARQUEE_FILL, MONO_FONT, PAPER, PENCIL } from '../theme'
+import { useTimeline } from '../timeline/timeline-store'
 import { useUI, type Viewport } from '../ui-store'
 import { screenToWorld, viewportMatrix, worldToScreen } from '../viewport'
 import { frameLabels, LABEL_FONT_FAMILY, LABEL_FONT_SIZE, LABEL_GAP, LABEL_HEIGHT } from './labels'
@@ -42,6 +46,9 @@ export function Overlay() {
   const editing = useUI((s) => s.editing)
   const guides = useUI((s) => s.guides)
   const showLinks = useUI((s) => s.panelTab === 'animate')
+  const linkDraft = useUI((s) => s.linkDraft)
+  // Layers drawn mid-animation aren't where their base geometry is; don't offer handles for it.
+  const scrubbing = useTimeline((s) => s.open && s.clipId !== null && (s.playing || s.time > 0))
   const selected = new Set(selection)
 
   return (
@@ -73,11 +80,15 @@ export function Overlay() {
         (id) => snap.nodes.has(id) && <Outline key={id} snap={snap} viewport={viewport} id={id} stroke={INK} />,
       )}
 
-      <SelectionTransformer snap={snap} viewport={viewport} selection={selection} hidden={editing !== null} />
+      <SelectionTransformer snap={snap} viewport={viewport} selection={selection} hidden={editing !== null || scrubbing} />
       {editing === null && <DimensionTag snap={snap} viewport={viewport} selection={selection} />}
 
       {marquee && <MarqueeMark viewport={viewport} rect={marquee} />}
       {showLinks && <Connectors snap={snap} viewport={viewport} selection={selection} />}
+      {showLinks && !linkDraft && editing === null && selection.length === 1 && snap.nodes.has(selection[0]) && (
+        <LinkHandle snap={snap} viewport={viewport} id={selection[0]} />
+      )}
+      {linkDraft && snap.nodes.has(linkDraft.from) && <LinkDraftMark snap={snap} viewport={viewport} draft={linkDraft} />}
       {guides.map((guide) => (
         <GuideMark key={`${guide.axis}:${guide.value}`} viewport={viewport} guide={guide} />
       ))}
@@ -88,10 +99,15 @@ export function Overlay() {
 /** Half-pixel snapping keeps 1px hairlines crisp. */
 const crisp = (n: number) => Math.round(n) + 0.5
 
-function Outline(props: { snap: SceneSnapshot; viewport: Viewport; id: NodeId; stroke: string }) {
-  const points = worldCorners(props.snap, props.id).flatMap((p) => {
-    const s = worldToScreen(props.viewport, p)
-    return [crisp(s.x), crisp(s.y)]
+function Outline(props: { snap: SceneSnapshot; viewport: Viewport; id: NodeId; stroke: string; inset?: number }) {
+  const inset = props.inset ?? 0
+  const corners = worldCorners(props.snap, props.id).map((p) => worldToScreen(props.viewport, p))
+  const cx = corners.reduce((sum, p) => sum + p.x, 0) / 4
+  const cy = corners.reduce((sum, p) => sum + p.y, 0) / 4
+  const points = corners.flatMap((s) => {
+    // Pull each corner toward the center by `inset` screen px (a second, inner line).
+    const d = Math.hypot(s.x - cx, s.y - cy) || 1
+    return [crisp(s.x - ((s.x - cx) / d) * inset), crisp(s.y - ((s.y - cy) / d) * inset)]
   })
   return <Line points={points} closed stroke={props.stroke} strokeWidth={1} listening={false} perfectDrawEnabled={false} />
 }
@@ -105,6 +121,13 @@ interface TransformGesture {
 }
 
 const SNAP_DISTANCE = 6
+
+const ALL_ANCHORS = ['top-left', 'top-center', 'top-right', 'middle-right', 'middle-left', 'bottom-left', 'bottom-center', 'bottom-right']
+const WIDTH_ANCHORS = ['middle-left', 'middle-right']
+
+/** Konva name of the prototype connection handle; the canvas starts a link drag when it's pressed. */
+export const LINK_HANDLE = 'link-handle'
+const HANDLE_GAP = 16
 
 /**
  * Konva's Transformer drives invisible proxy rects, one per selected node, that
@@ -128,6 +151,12 @@ function SelectionTransformer(props: { snap: SceneSnapshot; viewport: Viewport; 
     return node && node.visible && !node.locked
   })
   const idsKey = ids.join('|')
+  // Library components limit which edges resize: fixed-size ones none, content-sized ones only width.
+  const resizeModes = ids.map((id) => {
+    const node = snap.nodes.get(id)
+    return node?.type === 'component' ? (getSpec(node.component)?.resize ?? 'both') : 'both'
+  })
+  const enabledAnchors = resizeModes.includes('none') ? [] : resizeModes.includes('width') ? WIDTH_ANCHORS : ALL_ANCHORS
 
   useLayoutEffect(() => {
     const tr = transformer.current
@@ -188,6 +217,8 @@ function SelectionTransformer(props: { snap: SceneSnapshot; viewport: Viewport; 
       )
       adjustTextResize(g.snap, id, patches)
     }
+    pinSizing(g.snap, patches)
+    constrainComponentPatches(store, g.snap, patches)
     g.update(() => applyPatches(store, patches))
   }
 
@@ -222,6 +253,7 @@ function SelectionTransformer(props: { snap: SceneSnapshot; viewport: Viewport; 
       <Transformer
         ref={transformer}
         visible={!props.hidden && ids.length > 0}
+        enabledAnchors={enabledAnchors}
         keepRatio={false}
         flipEnabled={false}
         ignoreStroke
@@ -283,15 +315,21 @@ function GuideMark({ viewport, guide }: { viewport: Viewport; guide: Guide }) {
   return <Line points={points} stroke={PENCIL} strokeWidth={1} listening={false} perfectDrawEnabled={false} />
 }
 
-/** Prototype connections (Animate tab): a pencil curve from each linked layer to its frame. */
+/** Prototype connections (Animate tab): a pencil curve from each layer to every frame or layer its actions target. */
 function Connectors(props: { snap: SceneSnapshot; viewport: Viewport; selection: NodeId[] }) {
   const { snap, viewport, selection } = props
-  const links: { id: NodeId; target: NodeId }[] = []
+  const links = new Map<string, { id: NodeId; target: NodeId }>()
   for (const node of snap.nodes.values()) {
-    const target = node.link?.target
-    if (target && target !== 'back' && node.visible && snap.nodes.has(target)) links.push({ id: node.id, target })
+    if (!node.visible) continue
+    for (const ix of node.interactions) {
+      for (const action of ix.actions) {
+        if ('target' in action && action.target !== node.id && snap.nodes.has(action.target)) {
+          links.set(`${node.id}>${action.target}`, { id: node.id, target: action.target })
+        }
+      }
+    }
   }
-  return links.map(({ id, target }) => {
+  return [...links.values()].map(({ id, target }) => {
     const from = worldBounds(snap, id)
     const to = worldBounds(snap, target)
     const forward = to.x >= from.x + from.width / 2
@@ -300,7 +338,7 @@ function Connectors(props: { snap: SceneSnapshot; viewport: Viewport; selection:
     const bend = Math.max(40, Math.abs(end.x - start.x) / 2) * (forward ? 1 : -1)
     const tip = forward ? -8 : 8
     return (
-      <Group key={id} opacity={selection.includes(id) ? 1 : 0.55}>
+      <Group key={`${id}>${target}`} opacity={selection.includes(id) ? 1 : 0.55}>
         <Shape
           listening={false}
           stroke={PENCIL}
@@ -322,6 +360,71 @@ function Connectors(props: { snap: SceneSnapshot; viewport: Viewport; selection:
       </Group>
     )
   })
+}
+
+function handlePoint(snap: SceneSnapshot, viewport: Viewport, id: NodeId): Point {
+  const b = worldBounds(snap, id)
+  const p = worldToScreen(viewport, { x: b.x + b.width, y: b.y + b.height / 2 })
+  return { x: Math.round(p.x + HANDLE_GAP), y: Math.round(p.y) }
+}
+
+/** The ⊕ beside the selected layer (Animate tab): drag it onto a frame to link. */
+function LinkHandle(props: { snap: SceneSnapshot; viewport: Viewport; id: NodeId }) {
+  const { x, y } = handlePoint(props.snap, props.viewport, props.id)
+  const linked = Boolean(props.snap.nodes.get(props.id)?.interactions.some((ix) => ix.actions.some((a) => 'target' in a && a.target !== '')))
+  const setCursor = (e: Konva.KonvaEventObject<MouseEvent>, cursor: string) => {
+    const container = e.target.getStage()?.container()
+    if (container) container.style.cursor = cursor
+  }
+  return (
+    <Group name={LINK_HANDLE} x={x} y={y}>
+      <Circle
+        radius={8}
+        fill={linked ? PENCIL : PAPER}
+        stroke={PENCIL}
+        strokeWidth={1.5}
+        hitStrokeWidth={10}
+        onMouseEnter={(e) => setCursor(e, 'crosshair')}
+        onMouseLeave={(e) => setCursor(e, '')}
+      />
+      <Line points={[-3.5, 0, 3.5, 0]} stroke={linked ? PAPER : PENCIL} strokeWidth={1.5} listening={false} />
+      <Line points={[0, -3.5, 0, 3.5]} stroke={linked ? PAPER : PENCIL} strokeWidth={1.5} listening={false} />
+    </Group>
+  )
+}
+
+/** While dragging a link: the pencil curve to the pointer, and the frame it would connect to. */
+function LinkDraftMark(props: { snap: SceneSnapshot; viewport: Viewport; draft: { from: NodeId; to: Point; target: NodeId | null } }) {
+  const { snap, viewport, draft } = props
+  const start = handlePoint(snap, viewport, draft.from)
+  const end = worldToScreen(viewport, draft.to)
+  const bend = Math.max(40, Math.abs(end.x - start.x) / 2)
+  const target = draft.target ? snap.nodes.get(draft.target) : undefined
+  return (
+    <Group listening={false}>
+      {target && <Outline snap={snap} viewport={viewport} id={target.id} stroke={PENCIL} />}
+      {target && <Outline snap={snap} viewport={viewport} id={target.id} stroke={PENCIL} inset={2} />}
+      <Shape
+        stroke={PENCIL}
+        strokeWidth={1.5}
+        dash={target ? undefined : [5, 4]}
+        sceneFunc={(ctx, shape) => {
+          ctx.beginPath()
+          ctx.moveTo(start.x, start.y)
+          ctx.bezierCurveTo(start.x + bend, start.y, end.x - bend, end.y, end.x, end.y)
+          ctx.strokeShape(shape)
+        }}
+      />
+      <Circle x={start.x} y={start.y} radius={3.5} fill={PENCIL} />
+      <Circle x={end.x} y={end.y} radius={3.5} fill={PENCIL} />
+      {target && (
+        <Label x={Math.round(end.x + 12)} y={Math.round(end.y + 12)}>
+          <Tag fill={INK} cornerRadius={2} />
+          <Text text={`Link to ${target.name}`} fontFamily={MONO_FONT} fontSize={11} fill={PAPER} padding={4} />
+        </Label>
+      )}
+    </Group>
+  )
 }
 
 function MarqueeMark(props: { viewport: Viewport; rect: { x: number; y: number; width: number; height: number } }) {

@@ -1,8 +1,21 @@
-import type { EllipseNode, FrameNode, ImageNode, NodeId, RectNode, Shadow, TextNode } from '@codeframe/scene'
-import { memo } from 'react'
+import { expandInstance } from '@codeframe/library'
+import {
+  childrenOf,
+  type ComponentNode,
+  type EllipseNode,
+  type FrameNode,
+  type ImageNode,
+  type NodeId,
+  type RectNode,
+  type SceneSnapshot,
+  type Shadow,
+  type TextNode,
+} from '@codeframe/scene'
+import { memo, useMemo, type ReactNode } from 'react'
 import { Ellipse, Group, Image as KonvaImage, Rect, Text } from 'react-konva'
 import { useAssetImage } from '../images'
-import { useAsset, useChildren, useNode } from '../scene-context'
+import { measureLibraryText, useLibraryTheme } from '../library'
+import { useAsset, useChildren, useNode, useSceneStore } from '../scene-context'
 import { konvaFontStyle } from '../text'
 import { IMAGE_PLACEHOLDER } from '../theme'
 import { useUI } from '../ui-store'
@@ -35,6 +48,8 @@ const NodeView = memo(function NodeView({ id }: { id: NodeId }) {
       return <TextView node={node} />
     case 'image':
       return <ImageView node={node} />
+    case 'component':
+      return <ComponentView node={node} />
     case 'group':
       return (
         <Group ref={konvaRef(node.id)} opacity={node.opacity}>
@@ -43,6 +58,47 @@ const NodeView = memo(function NodeView({ id }: { id: NodeId }) {
       )
   }
 })
+
+/**
+ * A library component instance. Its spec draws it as ordinary scene nodes,
+ * rendered with the same views as everything else.
+ */
+function ComponentView({ node }: { node: ComponentNode }) {
+  const theme = useLibraryTheme(useSceneStore())
+  const scene = useMemo(() => expandInstance(node, theme, measureLibraryText), [node, theme])
+  return (
+    <Group ref={konvaRef(node.id)} x={node.x} y={node.y} rotation={node.rotation} opacity={node.opacity}>
+      {scene ? (
+        <VirtualView snap={scene.snapshot} id={scene.rootId} />
+      ) : (
+        <Rect width={node.width} height={node.height} fill={IMAGE_PLACEHOLDER} />
+      )}
+    </Group>
+  )
+}
+
+function VirtualView({ snap, id }: { snap: SceneSnapshot; id: NodeId }) {
+  const node = snap.nodes.get(id)
+  if (!node || !node.visible) return null
+  switch (node.type) {
+    case 'frame':
+      return (
+        <FrameView node={node}>
+          {childrenOf(snap, id).map((child) => (
+            <VirtualView key={child} snap={snap} id={child} />
+          ))}
+        </FrameView>
+      )
+    case 'rect':
+      return <RectView node={node} />
+    case 'ellipse':
+      return <EllipseView node={node} />
+    case 'text':
+      return <TextView node={node} />
+    default:
+      return null
+  }
+}
 
 function toRgba(hex: string): string {
   const h = hex.slice(1)
@@ -99,7 +155,8 @@ function InsideStroke(props: {
   )
 }
 
-function FrameView({ node }: { node: FrameNode }) {
+/** `children` replaces the node's document children (used for a component's drawn parts). */
+function FrameView({ node, children }: { node: FrameNode; children?: ReactNode }) {
   const { width: w, height: h } = node
   const r = Math.min(node.cornerRadius, w / 2, h / 2)
   const clip = !node.clip
@@ -116,9 +173,7 @@ function FrameView({ node }: { node: FrameNode }) {
     <Group ref={konvaRef(node.id)} x={node.x} y={node.y} rotation={node.rotation} opacity={node.opacity}>
       <Rect width={w} height={h} fill={node.fill ?? undefined} cornerRadius={r} {...shadowProps(node.shadow)} />
       <InsideStroke width={w} height={h} stroke={node.stroke} strokeWidth={node.strokeWidth} cornerRadius={r} />
-      <Group {...clip}>
-        <NodeList parentId={node.id} />
-      </Group>
+      <Group {...clip}>{children ?? <NodeList parentId={node.id} />}</Group>
     </Group>
   )
 }

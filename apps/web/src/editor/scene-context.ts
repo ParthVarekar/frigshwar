@@ -6,7 +6,8 @@ import {
   type SceneSnapshot,
   type SceneStore,
 } from '@codeframe/scene'
-import { createContext, useContext, useSyncExternalStore } from 'react'
+import { createContext, useContext, useMemo, useSyncExternalStore } from 'react'
+import { useTimeline } from './timeline/timeline-store'
 
 const SceneStoreContext = createContext<SceneStore | null>(null)
 
@@ -24,10 +25,15 @@ export function useScene(): SceneSnapshot {
   return useSyncExternalStore(store.subscribe, store.getSnapshot)
 }
 
-/** Re-renders only when this node changes; unchanged nodes keep their identity. */
+/**
+ * Re-renders only when this node changes; unchanged nodes keep their identity.
+ * While the timeline is open, the node carries its animated values at the playhead.
+ */
 export function useNode(id: NodeId | null): SceneNode | undefined {
   const store = useSceneStore()
-  return useSyncExternalStore(store.subscribe, () => (id === null ? undefined : store.getSnapshot().nodes.get(id)))
+  const node = useSyncExternalStore(store.subscribe, () => (id === null ? undefined : store.getSnapshot().nodes.get(id)))
+  const patch = useTimeline((s) => (id === null ? undefined : s.patches.get(id)))
+  return useMemo(() => (node && patch ? ({ ...node, ...patch } as SceneNode) : node), [node, patch])
 }
 
 /** Re-renders only when this container's child list changes. */

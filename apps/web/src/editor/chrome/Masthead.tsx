@@ -1,7 +1,8 @@
-import { ChevronDown, Play, Redo2, Undo2 } from 'lucide-react'
+import { ChevronDown, Code, Play, Redo2, Undo2 } from 'lucide-react'
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { openPreview, pickImages, redo, undo, zoomStep, zoomTo, zoomToFit, zoomToSelection } from '../commands'
+import { openExport, openPreview, pickImages, redo, undo, zoomStep, zoomTo, zoomToFit, zoomToSelection } from '../commands'
 import { useHistoryState, useSceneStore } from '../scene-context'
+import { useTimeline } from '../timeline/timeline-store'
 import { useUI, type Tool } from '../ui-store'
 import { IconButton, Popover } from './fields'
 import { Glyph } from './Glyph'
@@ -50,6 +51,18 @@ export function Masthead() {
           <span className="mx-2 h-4 w-px bg-rule" aria-hidden />
           <ToolButton label="Hand" shortcut="H" active={tool === 'hand'} onClick={() => setTool('hand')} />
         </nav>
+
+        <TimelineToggle />
+        <button
+          type="button"
+          title={`Export site code (${MOD} ${SHIFT} E)`}
+          onMouseDown={noFocus}
+          onClick={openExport}
+          className="flex h-8 shrink-0 items-center gap-1.5 border border-ink px-3 text-ui transition-colors hover:bg-paper-sunk"
+        >
+          <Glyph icon={Code} size={13} />
+          Export code
+        </button>
       </div>
 
       <div className="flex w-[272px] shrink-0 items-center justify-between border-l border-ink px-3">
@@ -69,6 +82,22 @@ export function Masthead() {
         </div>
       </div>
     </header>
+  )
+}
+
+function TimelineToggle() {
+  const open = useTimeline((s) => s.open)
+  return (
+    <button
+      type="button"
+      aria-pressed={open}
+      title="Timeline: keyframe animations"
+      onMouseDown={noFocus}
+      onClick={() => useTimeline.getState().setOpen(!open)}
+      className={`flex h-8 shrink-0 items-center gap-1.5 border border-ink px-3 text-ui transition-colors ${open ? 'bg-ink text-paper' : 'hover:bg-paper-sunk'}`}
+    >
+      Timeline
+    </button>
   )
 }
 

@@ -1,7 +1,8 @@
 import * as Y from 'yjs'
-import { getAssetsMap, getMetaMap, getNodesMap, readNode, type YNode } from './doc'
+import { getAnimationsMap, getAssetsMap, getMetaMap, getNodesMap, readNode, type YNode } from './doc'
+import { normalizeClip } from './normalize'
 import { buildSnapshot, type SceneSnapshot } from './tree'
-import type { AssetRecord, NodeId, SceneNode } from './types'
+import type { AnimationClip, AssetRecord, NodeId, SceneNode } from './types'
 
 export interface TransactOptions {
   /** Fold into the previous undo step. Used for every frame of a continuous gesture after the first. */
@@ -20,6 +21,7 @@ export class SceneStore {
   readonly doc: Y.Doc
   readonly nodes: Y.Map<YNode>
   readonly assets: Y.Map<AssetRecord>
+  readonly animations: Y.Map<unknown>
   readonly meta: Y.Map<unknown>
   readonly undoManager: Y.UndoManager
   /** Transaction origin for this client's own undoable edits. */
@@ -29,6 +31,9 @@ export class SceneStore {
   private snapshot: SceneSnapshot
   private readonly nodeCache = new Map<NodeId, SceneNode>()
   private readonly assetCache = new Map<string, AssetRecord>()
+  private readonly animationCache = new Map<string, AnimationClip>()
+  /** Replaced only when a clip changes, so snapshots share it otherwise. */
+  private animationView: ReadonlyMap<string, AnimationClip>
   private readonly listeners = new Set<() => void>()
   private depth = 0
 
@@ -36,21 +41,25 @@ export class SceneStore {
     this.doc = doc
     this.nodes = getNodesMap(doc)
     this.assets = getAssetsMap(doc)
+    this.animations = getAnimationsMap(doc)
     this.meta = getMetaMap(doc)
     for (const [id, y] of this.nodes) {
       const node = readNode(y)
       if (node) this.nodeCache.set(id, node)
     }
     for (const [id, asset] of this.assets) this.assetCache.set(id, asset)
-    this.snapshot = buildSnapshot(new Map(this.nodeCache), new Map(this.assetCache))
+    for (const [id, value] of this.animations) this.cacheClip(id, value)
+    this.animationView = new Map(this.animationCache)
+    this.snapshot = buildSnapshot(new Map(this.nodeCache), new Map(this.assetCache), undefined, this.animationView)
 
     this.nodes.observeDeep(this.onNodesChanged)
     this.assets.observe(this.onAssetsChanged)
+    this.animations.observe(this.onAnimationsChanged)
     this.meta.observe(this.notify)
 
     // Undo steps are delimited explicitly: every transact() starts a new step
     // unless it asks to merge, so the timeout only needs to never fire on its own.
-    this.undoManager = new Y.UndoManager(this.nodes, {
+    this.undoManager = new Y.UndoManager([this.nodes, this.animations], {
       trackedOrigins: new Set([this.origin]),
       captureTimeout: Number.MAX_SAFE_INTEGER,
     })
@@ -67,6 +76,10 @@ export class SceneStore {
 
   getNode(id: NodeId): SceneNode | undefined {
     return this.snapshot.nodes.get(id)
+  }
+
+  getAnimation(id: string): AnimationClip | undefined {
+    return this.snapshot.animations.get(id)
   }
 
   transact<T>(fn: () => T, options: TransactOptions = {}): T {
@@ -121,9 +134,16 @@ export class SceneStore {
   destroy(): void {
     this.nodes.unobserveDeep(this.onNodesChanged)
     this.assets.unobserve(this.onAssetsChanged)
+    this.animations.unobserve(this.onAnimationsChanged)
     this.meta.unobserve(this.notify)
     this.undoManager.destroy()
     this.listeners.clear()
+  }
+
+  private cacheClip(id: string, value: unknown) {
+    const clip = normalizeClip(value)
+    if (clip) this.animationCache.set(id, { ...clip, id })
+    else this.animationCache.delete(id)
   }
 
   private onNodesChanged = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
@@ -153,8 +173,14 @@ export class SceneStore {
     this.rebuild()
   }
 
+  private onAnimationsChanged = (event: Y.YMapEvent<unknown>) => {
+    for (const key of event.keysChanged) this.cacheClip(key, this.animations.get(key))
+    this.animationView = new Map(this.animationCache)
+    this.rebuild()
+  }
+
   private rebuild() {
-    this.snapshot = buildSnapshot(new Map(this.nodeCache), new Map(this.assetCache), this.snapshot)
+    this.snapshot = buildSnapshot(new Map(this.nodeCache), new Map(this.assetCache), this.snapshot, this.animationView)
     this.notify()
   }
 

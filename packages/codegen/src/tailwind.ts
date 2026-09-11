@@ -3,7 +3,7 @@
  * Values on Tailwind's scales use the scale; anything else becomes a bracketed
  * arbitrary value, so every class is exact and nothing is approximated.
  */
-import { EASING_CSS, type CssDeclarations } from '@codeframe/scene'
+import { CURVE_PRESETS, curveCss, type CssDeclarations } from '@codeframe/scene'
 import { FONTS } from './versions'
 
 export interface TailwindOptions {
@@ -17,11 +17,14 @@ const FONT_SIZES: Record<number, string> = { 12: 'xs', 14: 'sm', 16: 'base', 18:
 const WEIGHTS: Record<string, string> = { '100': 'thin', '200': 'extralight', '300': 'light', '500': 'medium', '600': 'semibold', '700': 'bold', '800': 'extrabold', '900': 'black' }
 const LEADING: Record<string, string> = { '1': 'none', '1.25': 'tight', '1.375': 'snug', '1.5': 'normal', '1.625': 'relaxed', '2': 'loose' }
 const EASE_CLASSES: Record<string, string> = {
-  [EASING_CSS.linear]: 'ease-linear',
-  [EASING_CSS['ease-in']]: 'ease-in',
-  [EASING_CSS['ease-out']]: 'ease-out',
-  [EASING_CSS['ease-in-out']]: 'ease-in-out',
+  [curveCss(CURVE_PRESETS.linear)]: 'ease-linear',
+  [curveCss(CURVE_PRESETS['ease-in'])]: 'ease-in',
+  [curveCss(CURVE_PRESETS['ease-out'])]: 'ease-out',
+  [curveCss(CURVE_PRESETS['ease-in-out'])]: 'ease-in-out',
 }
+
+const JUSTIFY: Record<string, string> = { 'flex-start': 'justify-start', center: 'justify-center', 'flex-end': 'justify-end', 'space-between': 'justify-between' }
+const ITEMS: Record<string, string> = { 'flex-start': 'items-start', center: 'items-center', 'flex-end': 'items-end', stretch: 'items-stretch' }
 
 const round = (n: number) => Math.round(n * 100) / 100
 const pxValue = (v: string) => Number.parseFloat(v)
@@ -83,7 +86,7 @@ export function declarationsToClasses(css: CssDeclarations, variant = '', option
         break
       case 'left':
       case 'top':
-        add(spacing(property, pxValue(value)))
+        add(spacing(property, pxValue(value), 96))
         break
       case 'width':
         add(spacing('w', pxValue(value), 96))
@@ -142,7 +145,7 @@ export function declarationsToClasses(css: CssDeclarations, variant = '', option
         add(value === 'pre' ? 'whitespace-pre' : value === 'pre-wrap' ? 'whitespace-pre-wrap' : `whitespace-${value}`)
         break
       case 'overflow-wrap':
-        add(value === 'break-word' && 'break-words')
+        add(value === 'break-word' && css['white-space'] !== 'pre' && 'break-words')
         break
       case 'translate': {
         const [x = '0px', y = '0px'] = value.split(/\s+/)
@@ -168,6 +171,58 @@ export function declarationsToClasses(css: CssDeclarations, variant = '', option
         break
       case 'animation':
         add(`animate-[${arbitrary(value)}]`)
+        break
+      case 'display':
+        add(value)
+        break
+      case 'flex-direction':
+        add(value === 'column' ? 'flex-col' : value === 'row' ? false : `flex-${value}`)
+        break
+      case 'flex-wrap':
+        add(value === 'wrap' ? 'flex-wrap' : `flex-${value}`)
+        break
+      case 'gap':
+        add(spacing('gap', pxValue(value)))
+        break
+      case 'row-gap':
+        add(spacing('gap-y', pxValue(value)))
+        break
+      case 'column-gap':
+        add(spacing('gap-x', pxValue(value)))
+        break
+      case 'padding': {
+        const [top, right, bottom, left] = value.split(/\s+/).map(pxValue)
+        if (top === right && right === bottom && bottom === left) add(spacing('p', top))
+        else if (top === bottom && left === right) add(right ? spacing('px', right) : false, top ? spacing('py', top) : false)
+        else add(top ? spacing('pt', top) : false, right ? spacing('pr', right) : false, bottom ? spacing('pb', bottom) : false, left ? spacing('pl', left) : false)
+        break
+      }
+      case 'justify-content':
+        add(JUSTIFY[value] ?? `justify-[${arbitrary(value)}]`)
+        break
+      case 'align-items':
+        add(ITEMS[value] ?? `items-[${arbitrary(value)}]`)
+        break
+      case 'align-self':
+        add(value === 'stretch' ? 'self-stretch' : `self-[${arbitrary(value)}]`)
+        break
+      case 'flex':
+        add(value === '1 1 0px' ? 'flex-1' : `flex-[${arbitrary(value)}]`)
+        break
+      case 'flex-shrink':
+        add(value === '0' ? 'shrink-0' : `shrink-[${value}]`)
+        break
+      case 'min-width':
+        add(spacing('min-w', pxValue(value)))
+        break
+      case 'max-width':
+        add(spacing('max-w', pxValue(value)))
+        break
+      case 'min-height':
+        add(spacing('min-h', pxValue(value)))
+        break
+      case 'max-height':
+        add(spacing('max-h', pxValue(value)))
         break
       case 'margin':
       case 'box-sizing':

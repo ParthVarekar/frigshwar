@@ -6,7 +6,9 @@
 import { insertNode, patchNode } from './doc'
 import { parentSpaceMatrix, selectionBounds, worldBounds, worldMatrix } from './geometry'
 import { newId } from './ids'
+import { inFlow, isAutoLayout, stackedSize } from './layout'
 import { apply, IDENTITY, invert, multiply, normalizeDeg, round2, translation, unionRects, type Matrix, type Point } from './matrix'
+import { migrateLink } from './normalize'
 import { keysForPosition } from './order'
 import type { SceneStore, TransactOptions } from './store'
 import { patchesForTranslate, rebaseSubtree, type PatchMap } from './transform'
@@ -23,7 +25,10 @@ import {
   isContainerType,
   NODE_DEFAULTS,
   TYPE_LABELS,
+  type Action,
+  type AnimationClip,
   type AssetRecord,
+  type Interaction,
   type NodeId,
   type NodePatch,
   type NodeType,
@@ -143,13 +148,21 @@ export function moveNodes(
 function planReparent(snap: SceneSnapshot, ids: readonly NodeId[], targetId: NodeId | null, keys: readonly string[]): PatchMap {
   const out: PatchMap = new Map()
   const inverseTarget = invert(spaceOf(snap, targetId))
+  const intoStack = targetId !== null && isAutoLayout(snap.nodes.get(targetId))
   ids.forEach((id, i) => {
-    if (parentOf(snap, id) !== targetId) {
+    const parentId = parentOf(snap, id)
+    if (parentId !== targetId) {
       rebaseSubtree(snap, id, multiply(inverseTarget, parentSpaceMatrix(snap, id)), out)
+      const node = snap.nodes.get(id)!
+      if (!intoStack && leavesStack(snap, parentId, node)) out.set(id, { ...out.get(id), ...stackedSize(node) })
     }
     out.set(id, { ...out.get(id), parentId: targetId, index: keys[i] })
   })
   return out
+}
+
+function leavesStack(snap: SceneSnapshot, parentId: NodeId | null, node: SceneNode): boolean {
+  return parentId !== null && isAutoLayout(snap.nodes.get(parentId)) && inFlow(node)
 }
 
 export type ReorderDirection = 'forward' | 'backward' | 'front' | 'back'
@@ -260,9 +273,12 @@ export function unwrapNodes(store: SceneStore, ids: Iterable<NodeId>): NodeId[] 
     const siblings = childrenOf(snap, parentId)
     const keys = keysForPosition(siblingKeys(snap, parentId), siblings.indexOf(containerId) + 1, kids.length)
     const delta = multiply(invert(spaceOf(snap, parentId)), worldMatrix(snap, containerId))
+    const intoStack = parentId !== null && isAutoLayout(snap.nodes.get(parentId))
     kids.forEach((id, i) => {
       rebaseSubtree(snap, id, delta, patches)
-      patches.set(id, { ...patches.get(id), parentId, index: keys[i] })
+      const node = snap.nodes.get(id)!
+      const size = !intoStack && leavesStack(snap, containerId, node) ? stackedSize(node) : {}
+      patches.set(id, { ...patches.get(id), ...size, parentId, index: keys[i] })
       lifted.push(id)
     })
   }
@@ -342,8 +358,8 @@ export function pasteNodes(
       id: idMap.get(node.id)!,
       parentId: isRoot ? targetId : (idMap.get(node.parentId ?? '') ?? targetId),
       index: isRoot ? rootKeys[payload.roots.indexOf(node.id)] : node.index,
-      // Links between pasted frames follow the copies.
-      link: node.link && idMap.has(node.link.target) ? { ...node.link, target: idMap.get(node.link.target)! } : node.link,
+      // Payloads copied by a v1 client still carry `link`.
+      interactions: remapInteractions(node.interactions ?? migrateLink((node as { link?: unknown }).link), idMap),
     } as SceneNode
   })
 
@@ -362,7 +378,15 @@ function scratchSnapshot(nodes: Map<NodeId, SceneNode>): SceneSnapshot {
     parents.set(node.id, parent)
     if (parent !== null) children.set(parent, [...(children.get(parent) ?? []), node.id])
   }
-  return { nodes, children, parents, order: new Map(), assets: new Map() }
+  return { nodes, children, parents, order: new Map(), assets: new Map(), animations: new Map() }
+}
+
+/** Action targets inside a pasted set (frames linking to each other) follow the copies. */
+function remapInteractions(interactions: Interaction[], idMap: ReadonlyMap<NodeId, NodeId>): Interaction[] {
+  return interactions.map((ix) => ({
+    ...ix,
+    actions: ix.actions.map((a) => ('target' in a && idMap.has(a.target) ? ({ ...a, target: idMap.get(a.target)! } as Action) : a)),
+  }))
 }
 
 /**
@@ -394,6 +418,20 @@ export function duplicateNodes(store: SceneStore, ids: Iterable<NodeId>, options
 export function addAsset(store: SceneStore, asset: AssetRecord): void {
   if (store.assets.has(asset.id)) return
   store.transact(() => store.assets.set(asset.id, asset), { untracked: true })
+}
+
+// ---------------------------------------------------------------------------
+// Timeline clips
+// ---------------------------------------------------------------------------
+
+/** Creates or replaces a clip. Clips are whole JSON values, so the last writer wins per clip. */
+export function putAnimation(store: SceneStore, clip: AnimationClip, options?: TransactOptions): void {
+  store.transact(() => store.animations.set(clip.id, JSON.parse(JSON.stringify(clip))), options)
+}
+
+export function deleteAnimation(store: SceneStore, id: string): void {
+  if (!store.animations.has(id)) return
+  store.transact(() => store.animations.delete(id))
 }
 
 // ---------------------------------------------------------------------------

@@ -26,11 +26,35 @@ export function isContainerType(type: NodeType): boolean {
 export type Color = string
 
 // ---------------------------------------------------------------------------
-// Effects & motion. Every field maps to plain CSS (box-shadow, transitions,
-// :hover/:active rules, @keyframes), so what animates in Preview is what ships.
+// Effects, interactions & motion (spec: docs/motion.md). Effects map to plain
+// CSS; interactions, scroll effects and timeline clips run on the small motion
+// runtime shared by Preview and exported code, so what plays is what ships.
 // ---------------------------------------------------------------------------
 
-export type Easing = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'spring'
+export interface BezierCurve {
+  type: 'bezier'
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+/** A physical spring. Its duration is derived from the parameters (`springDuration`). */
+export interface SpringCurve {
+  type: 'spring'
+  stiffness: number
+  damping: number
+  mass: number
+}
+
+export type Curve = BezierCurve | SpringCurve
+
+/** Milliseconds. `duration` is ignored when the curve is a spring. */
+export interface Timing {
+  duration: number
+  delay: number
+  curve: Curve
+}
 
 export interface Shadow {
   x: number
@@ -39,63 +63,181 @@ export interface Shadow {
   color: Color
 }
 
-/** Durations in milliseconds. */
-export interface Transition {
-  duration: number
-  delay: number
-  easing: Easing
-}
-
-/** Property overrides applied while hovered or pressed. Transforms pivot on the center. */
-export interface StateStyle {
+/** Values an effect animates from or to. Transforms pivot on the layer's center. */
+export interface MotionState {
   opacity?: number
   scale?: number
-  /** Degrees added to the node's rotation. */
+  /** Degrees added to the layer's rotation. */
   rotate?: number
   x?: number
   y?: number
+  /** Layer blur radius, px. */
+  blur?: number
+}
+
+/** Property overrides applied while hovered or pressed. */
+export interface StateStyle extends MotionState {
   fill?: Color
   shadow?: Shadow
 }
 
-export type AppearPreset = 'fade' | 'slide-up' | 'slide-down' | 'slide-left' | 'slide-right' | 'scale' | 'blur'
+export type AppearTrigger = 'load' | 'in-view'
 
-export interface AppearAnimation {
-  preset: AppearPreset
-  duration: number
-  delay: number
-  easing: Easing
-  /** Travel for slide presets, px. */
-  distance: number
+/** Enters from `from` to the layer's own style, on page load or when scrolled into view. */
+export interface AppearEffect {
+  from: MotionState
+  trigger: AppearTrigger
+  /** In view: play the first time only, instead of every time it re-enters. */
+  once: boolean
+  /** In view: fraction of the layer that must be visible, 0–1. */
+  amount: number
+  timing: Timing
 }
 
 export type LoopPreset = 'pulse' | 'spin' | 'bounce' | 'float' | 'wiggle'
 
-export interface LoopAnimation {
+export interface LoopEffect {
   preset: LoopPreset
+  /** One cycle, ms. */
   duration: number
-  easing: Easing
+  curve: Curve
 }
 
-export type LinkTransition =
-  | 'instant'
-  | 'dissolve'
-  | 'slide-left'
-  | 'slide-right'
-  | 'slide-up'
-  | 'slide-down'
-  | 'push-left'
-  | 'push-right'
+export type ScrollSource = 'page' | 'in-view'
 
-/** A prototype connection: on click, go to a canvas-level frame (or back). */
-export interface PrototypeLink {
-  target: NodeId | 'back'
-  transition: LinkTransition
-  duration: number
-  easing: Easing
+export interface ScrollKeyframe {
+  /** Scroll progress, 0–1. */
+  at: number
+  state: MotionState
 }
 
-export const DEFAULT_TRANSITION: Transition = { duration: 200, delay: 0, easing: 'ease-out' }
+/**
+ * Scroll transform: scroll progress drives the layer through keyframes.
+ * `page` progress is the page's scroll position; `in-view` runs from the layer
+ * entering the viewport (0) to leaving it (1).
+ */
+export interface ScrollEffect {
+  source: ScrollSource
+  keyframes: ScrollKeyframe[]
+}
+
+/** Scroll speed relative to the page: 1 moves with the page, 0.5 at half speed, 0 stays put. */
+export interface ParallaxEffect {
+  speed: number
+}
+
+export type TriggerType =
+  | 'click'
+  | 'while-hovering'
+  | 'while-pressing'
+  | 'mouse-enter'
+  | 'mouse-leave'
+  | 'mouse-down'
+  | 'mouse-up'
+  | 'after-delay'
+  | 'key'
+  | 'in-view'
+
+export interface Trigger {
+  type: TriggerType
+  /** `after-delay`: ms after the screen appears. */
+  delay: number
+  /** `key`: a `KeyboardEvent.key` value such as `Enter`, `ArrowRight` or `k`. */
+  key: string
+}
+
+export type TransitionType = 'instant' | 'dissolve' | 'smart-animate' | 'move-in' | 'move-out' | 'push' | 'slide-in' | 'slide-out'
+
+/** The way the moving screen travels: `left` enters from the right edge. */
+export type Direction = 'left' | 'right' | 'up' | 'down'
+
+export interface ScreenTransition {
+  type: TransitionType
+  direction: Direction
+  timing: Timing
+}
+
+export type OverlayPosition =
+  | 'center'
+  | 'top-left'
+  | 'top-center'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-center'
+  | 'bottom-right'
+  | 'manual'
+
+export interface OverlaySettings {
+  position: OverlayPosition
+  /** `manual`: offset from the screen's top-left corner, px. */
+  offset: { x: number; y: number }
+  closeOnOutside: boolean
+  /** Dims the screen behind the overlay; `null` for none. */
+  background: Color | null
+}
+
+export type PlayMode = 'play' | 'restart' | 'reverse' | 'toggle' | 'pause'
+
+/** Targets are `''` while unset, so a half-configured action survives normalization. */
+export type Action =
+  | { type: 'navigate'; target: NodeId; transition: ScreenTransition }
+  | { type: 'back'; transition: ScreenTransition }
+  | { type: 'overlay'; target: NodeId; overlay: OverlaySettings; transition: ScreenTransition }
+  | { type: 'swap-overlay'; target: NodeId; transition: ScreenTransition }
+  | { type: 'close-overlay' }
+  | { type: 'scroll-to'; target: NodeId; offset: number; animate: boolean; timing: Timing }
+  | { type: 'open-url'; url: string; newTab: boolean }
+  | { type: 'play-animation'; animation: AnimationId; mode: PlayMode }
+
+export type ActionType = Action['type']
+export type ActionOf<T extends ActionType> = Extract<Action, { type: T }>
+
+/** One trigger running its actions in order (Figma's "multiple actions"). */
+export interface Interaction {
+  id: string
+  trigger: Trigger
+  actions: Action[]
+}
+
+// ---------------------------------------------------------------------------
+// Timeline animations (keyframes), stored doc-level, one entry per clip.
+// ---------------------------------------------------------------------------
+
+export type AnimationId = string
+
+export type AnimatableProperty = 'x' | 'y' | 'width' | 'height' | 'rotation' | 'scale' | 'opacity' | 'fill' | 'cornerRadius' | 'blur'
+
+export interface Keyframe {
+  /** ms from the clip start. */
+  time: number
+  /** A number for geometry and opacity, `#RRGGBB(AA)` for fill. */
+  value: number | Color
+  /** Easing from this keyframe to the next. */
+  curve: Curve
+}
+
+export interface Track {
+  nodeId: NodeId
+  property: AnimatableProperty
+  keyframes: Keyframe[]
+}
+
+export type ClipRepeat = 'once' | 'loop' | 'alternate'
+
+/** A keyframe animation on one screen, Figma Motion style. */
+export interface AnimationClip {
+  id: AnimationId
+  name: string
+  /** Canvas-level frame the clip belongs to; its tracks target layers inside it. */
+  frameId: NodeId
+  duration: number
+  repeat: ClipRepeat
+  /** Play when the screen appears. */
+  autoplay: boolean
+  tracks: Track[]
+}
+
+export const DEFAULT_TRANSITION: Timing = { duration: 200, delay: 0, curve: { type: 'bezier', x1: 0, y1: 0, x2: 0.2, y2: 1 } }
 
 interface BaseNode {
   id: NodeId
@@ -118,10 +260,55 @@ interface BaseNode {
   hover: StateStyle | null
   press: StateStyle | null
   /** Timing for hover/press state changes. */
-  transition: Transition
-  appear: AppearAnimation | null
-  loop: LoopAnimation | null
-  link: PrototypeLink | null
+  transition: Timing
+  appear: AppearEffect | null
+  loop: LoopEffect | null
+  scroll: ScrollEffect | null
+  parallax: ParallaxEffect | null
+  interactions: Interaction[]
+  /**
+   * Sizing on each axis. `hug` fits the content (auto-layout frames; text sizes
+   * itself), `fill` takes the free space in an auto-layout parent, `fixed` keeps
+   * width/height.
+   */
+  sizeX: SizingMode
+  sizeY: SizingMode
+  minWidth: number | null
+  maxWidth: number | null
+  minHeight: number | null
+  maxHeight: number | null
+  /** Inside an auto-layout frame: keep its own x/y instead of flowing with the others. */
+  absolute: boolean
+}
+
+export type SizingMode = 'fixed' | 'hug' | 'fill'
+export type LayoutDirection = 'horizontal' | 'vertical'
+export type LayoutAlign = 'start' | 'center' | 'end'
+export type LayoutJustify = 'start' | 'center' | 'end' | 'space-between'
+
+export interface Padding {
+  top: number
+  right: number
+  bottom: number
+  left: number
+}
+
+/**
+ * Auto layout (Figma) / stack (Framer): children flow along one axis. Computed
+ * when snapshots are built and exported as flexbox.
+ */
+export interface FrameLayout {
+  direction: LayoutDirection
+  wrap: boolean
+  /** Between items along the direction. Unused by `space-between`, which spreads them. */
+  gap: number
+  /** Between wrapped lines. */
+  crossGap: number
+  padding: Padding
+  /** Distribution along the direction. */
+  justify: LayoutJustify
+  /** Alignment across the direction. */
+  align: LayoutAlign
 }
 
 interface Paint {
@@ -134,6 +321,7 @@ export interface FrameNode extends BaseNode, Paint {
   type: 'frame'
   cornerRadius: number
   clip: boolean
+  layout: FrameLayout | null
 }
 
 export interface RectNode extends BaseNode, Paint {
@@ -217,7 +405,7 @@ export const DEFAULT_CONTENT_FONT = 'IBM Plex Sans'
 
 type Defaults<T extends SceneNode> = Omit<T, 'id' | 'parentId' | 'index' | 'name'>
 
-const base = {
+const base: Omit<BaseNode, 'id' | 'type' | 'name' | 'parentId' | 'index'> = {
   x: 0,
   y: 0,
   width: 100,
@@ -232,11 +420,20 @@ const base = {
   transition: DEFAULT_TRANSITION,
   appear: null,
   loop: null,
-  link: null,
-} as const
+  scroll: null,
+  parallax: null,
+  interactions: [],
+  sizeX: 'fixed',
+  sizeY: 'fixed',
+  minWidth: null,
+  maxWidth: null,
+  minHeight: null,
+  maxHeight: null,
+  absolute: false,
+}
 
 export const NODE_DEFAULTS: { [K in NodeType]: Defaults<NodeOfType<K>> } = {
-  frame: { ...base, type: 'frame', width: 400, height: 300, fill: '#FFFFFF', stroke: null, strokeWidth: 1, cornerRadius: 0, clip: true },
+  frame: { ...base, type: 'frame', width: 400, height: 300, fill: '#FFFFFF', stroke: null, strokeWidth: 1, cornerRadius: 0, clip: true, layout: null },
   rect: { ...base, type: 'rect', fill: '#D9D3C7', stroke: null, strokeWidth: 1, cornerRadius: 0 },
   ellipse: { ...base, type: 'ellipse', fill: '#D9D3C7', stroke: null, strokeWidth: 1 },
   text: {

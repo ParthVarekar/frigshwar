@@ -2,20 +2,17 @@
 
 export const ROUTER_TSX = `import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentType } from 'react'
 
-export type Transition =
-  | 'instant'
-  | 'dissolve'
-  | 'slide-left'
-  | 'slide-right'
-  | 'slide-up'
-  | 'slide-down'
-  | 'push-left'
-  | 'push-right'
+export type Transition = 'instant' | 'dissolve' | 'smart-animate' | 'move-in' | 'move-out' | 'push' | 'slide-in' | 'slide-out'
+
+/** The way the moving screen travels: \`left\` enters from the right edge. */
+export type Direction = 'left' | 'right' | 'up' | 'down'
 
 export interface NavigateOptions {
   transition?: Transition
+  direction?: Direction
   /** Milliseconds. */
   duration?: number
+  /** Any CSS easing, including \`linear()\` springs. */
   easing?: string
 }
 
@@ -27,23 +24,28 @@ export function useNavigate(): Navigate {
   return useContext(NavigateContext)
 }
 
-const EASINGS: Record<string, string> = {
-  linear: 'linear',
-  ease: 'ease',
-  'ease-in': 'cubic-bezier(0.4, 0, 1, 1)',
-  'ease-out': 'cubic-bezier(0, 0, 0.2, 1)',
-  'ease-in-out': 'cubic-bezier(0.4, 0, 0.2, 1)',
-  spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
+const OFFSETS: Record<Direction, [string, string]> = {
+  left: ['100vw', '0px'],
+  right: ['-100vw', '0px'],
+  up: ['0px', '100vh'],
+  down: ['0px', '-100vh'],
 }
 
-const ENTER: Partial<Record<Transition, Keyframe[]>> = {
-  dissolve: [{ opacity: 0 }, { opacity: 1 }],
-  'slide-left': [{ transform: 'translateX(100vw)' }, { transform: 'none' }],
-  'slide-right': [{ transform: 'translateX(-100vw)' }, { transform: 'none' }],
-  'slide-up': [{ transform: 'translateY(100vh)' }, { transform: 'none' }],
-  'slide-down': [{ transform: 'translateY(-100vh)' }, { transform: 'none' }],
-  'push-left': [{ transform: 'translateX(100vw)' }, { transform: 'none' }],
-  'push-right': [{ transform: 'translateX(-100vw)' }, { transform: 'none' }],
+function enterKeyframes({ transition = 'instant', direction = 'left' }: NavigateOptions): Keyframe[] | null {
+  const [x, y] = OFFSETS[direction]
+  switch (transition) {
+    case 'dissolve':
+    case 'smart-animate':
+    case 'move-out':
+    case 'slide-out':
+      return [{ opacity: 0 }, { opacity: 1 }]
+    case 'move-in':
+    case 'push':
+    case 'slide-in':
+      return [{ translate: \`\${x} \${y}\` }, { translate: '0px 0px' }]
+    default:
+      return null
+  }
 }
 
 function currentPath(): string {
@@ -67,12 +69,9 @@ export function Router({ routes }: { routes: Record<string, ComponentType> }) {
     pending.current = null
     if (!options?.transition || !page.current) return
     window.scrollTo(0, 0)
-    const keyframes = ENTER[options.transition]
+    const keyframes = enterKeyframes(options)
     if (!keyframes) return
-    page.current.animate(keyframes, {
-      duration: options.duration ?? 300,
-      easing: EASINGS[options.easing ?? 'ease-out'] ?? options.easing,
-    })
+    page.current.animate(keyframes, { duration: options.duration ?? 300, easing: options.easing ?? 'ease-out' })
   }, [path])
 
   const navigate: Navigate = (to, options = {}) => {

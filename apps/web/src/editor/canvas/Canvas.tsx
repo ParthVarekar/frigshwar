@@ -1,24 +1,30 @@
 import {
   apply,
   applyPatches,
+  atPosition,
   childrenOf,
   createNode,
   descendantsOf,
+  flowPosition,
   frameAt,
   hitTest,
   IDENTITY,
   invert,
+  isAutoLayout,
+  isStacked,
   moveNodes,
   NODE_DEFAULTS,
   nodesInRect,
   normalizeSelection,
   parentOf,
   patchesForTranslate,
+  pathTo,
   duplicateNodes,
   selectionBounds,
   snapPoint,
   snapRect,
   snapTargets,
+  withNavigateTarget,
   worldMatrix,
   type Guide,
   type NodeId,
@@ -38,7 +44,8 @@ import { useUI } from '../ui-store'
 import { screenToWorld, zoomAround } from '../viewport'
 import { frameLabels, hitFrameLabel } from './labels'
 import { NodeList } from './NodeView'
-import { Overlay } from './Overlay'
+import { LINK_HANDLE, Overlay } from './Overlay'
+import { COMPONENT_MIME, insertComponent } from '../library'
 import { TextEditor } from './TextEditor'
 
 const DRAG_THRESHOLD = 3
@@ -182,8 +189,10 @@ export function Canvas() {
 
   /**
    * Moves nodes, snapping the selection box to smart guides (Ctrl/Cmd moves
-   * freely) and Alt-dragging a duplicate. On drop, nodes dragged into or out of
-   * a frame are reparented. The whole drag is one undo step.
+   * freely) and Alt-dragging a duplicate. Over an auto-layout frame, nodes join
+   * its flow at the pointer and reorder live; dragged out of one, they pop out
+   * under the pointer and move freely. On drop, nodes dragged into or out of a
+   * plain frame are reparented. The whole drag is one undo step.
    */
   const startMove = (e: ReactPointerEvent, ids: NodeId[], startWorld: Point, clickTarget: NodeId | null) => {
     let startSnap = store.getSnapshot()
@@ -192,6 +201,35 @@ export function Canvas() {
     let targets: SnapTargets | null = null
     let startBox: Rect | null = null
     let duplicated = false
+    // Free movement is measured from `origin`; a stack taking or releasing the nodes resets it.
+    let origin = startWorld
+    let rebase = false
+    const grabBox = selectionBounds(startSnap, movable)
+    const grab = grabBox ? { x: startWorld.x - grabBox.x, y: startWorld.y - grabBox.y } : { x: 0, y: 0 }
+
+    /** Returns whether a stack is placing the nodes at this pointer position. */
+    const stackDrag = (world: Point): boolean => {
+      const snap = store.getSnapshot()
+      const dragged = new Set(movable.flatMap((id) => [id, ...descendantsOf(snap, id)]))
+      const drop = frameAt(snap, world, dragged)
+      // Absolute children move freely inside their own stack.
+      const pinned = movable.some((id) => parentOf(snap, id) === drop && !isStacked(snap, id))
+      if (drop !== null && isAutoLayout(snap.nodes.get(drop)) && !pinned) {
+        const position = flowPosition(snap, drop, world, dragged)
+        if (!atPosition(snap, movable, drop, position)) update(() => moveNodes(store, movable, drop, position))
+        rebase = true
+        return true
+      }
+      if (movable.some((id) => isStacked(snap, id))) {
+        update(() => moveNodes(store, movable, drop, childrenOf(snap, drop).length))
+        const out = store.getSnapshot()
+        const box = selectionBounds(out, movable)
+        if (box) update(() => applyPatches(store, patchesForTranslate(out, movable, Math.round(world.x - grab.x - box.x), Math.round(world.y - grab.y - box.y))))
+        rebase = true
+      }
+      return false
+    }
+
     track(e, {
       move: (ev, s) => {
         if (movable.length === 0) return
@@ -203,15 +241,26 @@ export function Canvas() {
           startSnap = store.getSnapshot()
           useUI.getState().setSelection(movable)
         }
+        const { viewport, setHover, setGuides } = useUI.getState()
+        const w = screenToWorld(viewport, s)
+        setHover(null)
+        if (stackDrag(w)) {
+          setGuides([])
+          return
+        }
+        if (rebase) {
+          rebase = false
+          startSnap = store.getSnapshot()
+          origin = w
+          targets = null
+        }
         if (!targets) {
           const exclude = new Set(movable.flatMap((id) => [id, ...descendantsOf(startSnap, id)]))
           targets = snapTargets(startSnap, movable.map((id) => parentOf(startSnap, id)), exclude)
           startBox = selectionBounds(startSnap, movable)
         }
-        const { viewport, setHover, setGuides } = useUI.getState()
-        const w = screenToWorld(viewport, s)
-        let dx = Math.round(w.x - startWorld.x)
-        let dy = Math.round(w.y - startWorld.y)
+        let dx = Math.round(w.x - origin.x)
+        let dy = Math.round(w.y - origin.y)
         const lockY = ev.shiftKey && Math.abs(dx) > Math.abs(dy)
         const lockX = ev.shiftKey && !lockY
         if (lockY) dy = 0
@@ -223,7 +272,6 @@ export function Canvas() {
           if (!lockY) dy += snapped.dy
           guides = snapped.guides.filter((g) => (g.axis === 'x' ? !lockX : !lockY))
         }
-        setHover(null)
         setGuides(guides)
         update(() => applyPatches(store, patchesForTranslate(startSnap, movable, dx, dy)))
       },
@@ -336,10 +384,41 @@ export function Canvas() {
     })
   }
 
+  /**
+   * Prototype linking by drag: from the selected layer's ⊕ handle onto any other
+   * canvas-level frame. Keeps an existing link's transition settings.
+   */
+  const startLink = (e: ReactPointerEvent) => {
+    const from = useUI.getState().selection[0]
+    if (!from) return
+    const snap = store.getSnapshot()
+    const ownFrame = pathTo(snap, from)[0]
+    const frameUnder = (world: Point) => {
+      const top = hitTest(snap, world)[0]
+      return top && top !== ownFrame && snap.nodes.get(top)?.type === 'frame' ? top : null
+    }
+    track(e, {
+      move: (_, s) => {
+        const world = screenToWorld(useUI.getState().viewport, s)
+        useUI.getState().setLinkDraft({ from, to: world, target: frameUnder(world) })
+      },
+      up: (_, s, moved) => {
+        useUI.getState().setLinkDraft(null)
+        if (!moved) return
+        const target = frameUnder(screenToWorld(useUI.getState().viewport, s))
+        const node = store.getNode(from)
+        if (!target || !node) return
+        applyPatches(store, [[from, { interactions: withNavigateTarget(node.interactions, target) }]])
+      },
+    })
+  }
+
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     const screen = toScreen(e)
+    const hitShape = stage.current?.getIntersection(screen)
+    if (e.button === 0 && hitShape?.findAncestor(`.${LINK_HANDLE}`, true)) return startLink(e)
     // Transformer handles belong to Konva.
-    if (stage.current?.getIntersection(screen)?.getParent() instanceof Konva.Transformer) return
+    if (hitShape?.getParent() instanceof Konva.Transformer) return
     const state = useUI.getState()
     if (e.button === 1 || (e.button === 0 && (state.tool === 'hand' || state.spaceHeld))) return startPan(e)
     if (e.button !== 0) return
@@ -409,9 +488,16 @@ export function Canvas() {
         state.setContextMenu({ x: e.clientX, y: e.clientY, world: screenToWorld(state.viewport, screen) })
       }}
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes('Files')) e.preventDefault()
+        const types = e.dataTransfer.types
+        if (types.includes('Files') || types.includes(COMPONENT_MIME)) e.preventDefault()
       }}
       onDrop={(e) => {
+        const component = e.dataTransfer.getData(COMPONENT_MIME)
+        if (component) {
+          e.preventDefault()
+          insertComponent(store, component, screenToWorld(useUI.getState().viewport, toScreen(e)))
+          return
+        }
         const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/'))
         if (files.length === 0) return
         e.preventDefault()

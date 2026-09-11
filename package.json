@@ -13,7 +13,9 @@
     "dev:server": "npm run dev -w @codeframe/server",
     "build": "npm run build -w @codeframe/web",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "sync:runtime": "node scripts/sync-runtime.mjs",
+    "sync:shadcn": "node scripts/sync-shadcn.mjs"
   },
   "devDependencies": {
     "concurrently": "^10.0.5"

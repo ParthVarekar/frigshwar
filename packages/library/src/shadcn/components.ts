@@ -9,7 +9,8 @@ import { radii, withAlpha, type LibraryTheme } from '../theme'
 
 const SHADOW_XS: Shadow = { x: 0, y: 1, blur: 2, color: '#0000000D' }
 const SHADOW_SM: Shadow = { x: 0, y: 1, blur: 3, color: '#0000001A' }
-const HOVER_TIMING = { duration: 150, delay: 0, easing: 'ease-in-out' } as const
+/** Tailwind's `transition-all` default: 150ms, ease-in-out. */
+const HOVER_TIMING = { duration: 150, delay: 0, curve: { type: 'bezier', x1: 0.4, y1: 0, x2: 0.2, y2: 1 } } as const
 
 // Tailwind v4 type scale: font-size / line-height pairs.
 const TEXT_XS = { fontSize: 12, lineHeight: 16 / 12 }
@@ -334,7 +335,7 @@ const checkbox: ComponentSpec = {
     return { root: { fill: null }, children }
   },
   jsx: (props, ctx) => labelledJsx('Checkbox', props, ctx),
-  imports: (props) => (str(props, 'label') ? { checkbox: ['Checkbox'], label: ['Label'] } : { checkbox: ['Checkbox'] }),
+  imports: (props): Record<string, string[]> => (str(props, 'label') ? { checkbox: ['Checkbox'], label: ['Label'] } : { checkbox: ['Checkbox'] }),
   registry: (props) => (str(props, 'label') ? ['checkbox', 'label'] : ['checkbox']),
 }
 
@@ -361,7 +362,7 @@ const switchSpec: ComponentSpec = {
     return { root: { fill: null }, children }
   },
   jsx: (props, ctx) => labelledJsx('Switch', props, ctx),
-  imports: (props) => (str(props, 'label') ? { switch: ['Switch'], label: ['Label'] } : { switch: ['Switch'] }),
+  imports: (props): Record<string, string[]> => (str(props, 'label') ? { switch: ['Switch'], label: ['Label'] } : { switch: ['Switch'] }),
   registry: (props) => (str(props, 'label') ? ['switch', 'label'] : ['switch']),
 }
 
@@ -562,7 +563,7 @@ const card: ComponentSpec = {
       '</Card>',
     ].join('')
   },
-  imports(props) {
+  imports(props): Record<string, string[]> {
     const names = ['Card', 'CardHeader', 'CardTitle']
     if (str(props, 'description')) names.push('CardDescription')
     if (str(props, 'content')) names.push('CardContent')

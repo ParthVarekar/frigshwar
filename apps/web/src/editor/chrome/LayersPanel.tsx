@@ -10,10 +10,13 @@ import {
   type NodeId,
   type NodeType,
 } from '@codeframe/scene'
+import { COMPONENTS } from '@codeframe/library'
 import {
   ChevronDown,
   ChevronRight,
   Circle,
+  Columns3,
+  Component,
   Eye,
   EyeOff,
   Frame,
@@ -21,6 +24,7 @@ import {
   Image,
   Lock,
   LockOpen,
+  Rows3,
   Square,
   Type,
   type LucideIcon,
@@ -28,8 +32,9 @@ import {
 import { memo, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { toggleLock, toggleVisibility } from '../commands'
 import { useChildren, useNode, useScene, useSceneStore } from '../scene-context'
-import { useUI } from '../ui-store'
+import { useUI, type LeftTab } from '../ui-store'
 import { Glyph } from './Glyph'
+import { LibraryPanel } from './LibraryPanel'
 
 const TYPE_GLYPHS: Record<NodeType, LucideIcon> = {
   frame: Frame,
@@ -38,7 +43,13 @@ const TYPE_GLYPHS: Record<NodeType, LucideIcon> = {
   text: Type,
   image: Image,
   group: Group,
+  component: Component,
 }
+
+const LEFT_TABS: [LeftTab, string][] = [
+  ['layers', 'Layers'],
+  ['library', 'Library'],
+]
 
 const ROW_INDENT = 14
 
@@ -54,6 +65,7 @@ export function LayersPanel() {
   const layerCount = useScene().nodes.size
   const hasRoots = useChildren(null).length > 0
   const selection = useUI((s) => s.selection)
+  const leftTab = useUI((s) => s.leftTab)
   const tree = useRef<HTMLDivElement>(null)
   const [drop, setDrop] = useState<DropMark | null>(null)
 
@@ -145,10 +157,29 @@ export function LayersPanel() {
 
   return (
     <aside aria-label="Layers" className="flex w-[248px] shrink-0 flex-col border-r border-ink bg-paper">
-      <header className="flex h-10 shrink-0 items-center justify-between border-b border-rule px-3">
-        <h2 className="section-head">Layers</h2>
-        <span className="font-mono text-caption text-ink-3">{layerCount}</span>
+      <header className="flex h-10 shrink-0 items-end justify-between border-b border-rule px-3">
+        <div role="tablist" aria-label="Left panel" className="flex gap-5">
+          {LEFT_TABS.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={leftTab === value}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => useUI.getState().setLeftTab(value)}
+              className={`-mb-px h-9 border-b-2 font-display text-head italic transition-colors ${
+                leftTab === value ? 'border-ink text-ink' : 'border-transparent text-ink-3 hover:text-ink'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="mb-2.5 font-mono text-caption text-ink-3">{leftTab === 'layers' ? layerCount : COMPONENTS.length}</span>
       </header>
+      {leftTab === 'library' ? (
+        <LibraryPanel />
+      ) : (
       <div
         ref={tree}
         role="tree"
@@ -183,6 +214,7 @@ export function LayersPanel() {
           />
         )}
       </div>
+      )}
     </aside>
   )
 }
@@ -227,7 +259,7 @@ const LayerRow = memo(function LayerRow({ id, depth }: { id: NodeId; depth: numb
         >
           <Glyph icon={expanded ? ChevronDown : ChevronRight} size={12} />
         </button>
-        <Glyph icon={TYPE_GLYPHS[node.type]} size={13} className={selected ? 'text-paper/70' : 'text-ink-3'} />
+        <Glyph icon={node.type === 'frame' && node.layout ? (node.layout.direction === 'horizontal' ? Columns3 : Rows3) : TYPE_GLYPHS[node.type]} size={13} className={selected ? 'text-paper/70' : 'text-ink-3'} />
         {renaming ? (
           <RenameInput
             initial={node.name}

@@ -4,6 +4,7 @@
  */
 import {
   addAsset,
+  addAutoLayout,
   alignNodes,
   apply,
   childrenOf,
@@ -16,7 +17,9 @@ import {
   groupNodes,
   IDENTITY,
   invert,
+  isAutoLayout,
   isClipboardPayload,
+  isStacked,
   NODE_DEFAULTS,
   normalizeSelection,
   parentOf,
@@ -24,6 +27,7 @@ import {
   patchesForTranslate,
   pathTo,
   rectsIntersect,
+  removeAutoLayout,
   reorderNodes,
   selectionBounds,
   serializeNodes,
@@ -31,6 +35,7 @@ import {
   unwrapNodes,
   worldBounds,
   worldMatrix,
+  wrapInAutoLayout,
   applyPatches,
   type AlignEdge,
   type ClipboardPayload,
@@ -110,9 +115,38 @@ export function reorderSelection(store: SceneStore, direction: ReorderDirection)
   reorderNodes(store, selected(store), direction)
 }
 
+/** Arrow keys move layers; inside a stack, arrows along its direction reorder instead (as in Figma). */
 export function nudgeSelection(store: SceneStore, dx: number, dy: number) {
   const ids = unlocked(store, selected(store))
-  if (ids.length) applyPatches(store, patchesForTranslate(store.getSnapshot(), ids, dx, dy))
+  if (ids.length === 0) return
+  const snap = store.getSnapshot()
+  const stacked = ids.filter((id) => isStacked(snap, id))
+  const free = ids.filter((id) => !isStacked(snap, id))
+  const stack = stacked.length ? snap.nodes.get(parentOf(snap, stacked[0])!) : undefined
+  if (isAutoLayout(stack)) {
+    const step = stack.layout.direction === 'horizontal' ? dx : dy
+    if (step !== 0) reorderNodes(store, stacked, step < 0 ? 'backward' : 'forward')
+  }
+  if (free.length) applyPatches(store, patchesForTranslate(snap, free, dx, dy))
+}
+
+/** Shift+A: auto layout on a lone plain frame; anything else is wrapped in a new stack. */
+export function addAutoLayoutToSelection(store: SceneStore) {
+  const snap = store.getSnapshot()
+  const ids = unlocked(store, selected(store))
+  if (ids.length === 0) return
+  const only = ids.length === 1 ? snap.nodes.get(ids[0]) : undefined
+  if (only?.type === 'frame' && !only.layout) {
+    addAutoLayout(store, ids)
+    return
+  }
+  const id = wrapInAutoLayout(store, ids)
+  if (id) ui().setSelection([id])
+}
+
+/** Alt+Shift+A. */
+export function removeAutoLayoutFromSelection(store: SceneStore) {
+  removeAutoLayout(store, unlocked(store, selected(store)))
 }
 
 export function toggleVisibility(store: SceneStore, ids: NodeId[]) {
@@ -261,6 +295,10 @@ export function pickImages(store: SceneStore) {
 
 /** Last copied layers, for menu-driven paste (reading the system clipboard needs a permission prompt). */
 let clipboard: ClipboardPayload | null = null
+/** Pastes of the current copy so far; each lands a step further down-right. */
+let pasteCount = 0
+/** Set when a native paste event arrives, so the keyboard fallback stands down. */
+let pasteHandled = true
 
 export function hasClipboard(): boolean {
   return clipboard !== null
@@ -270,16 +308,37 @@ export function copySelection(store: SceneStore, data: DataTransfer): boolean {
   const ids = selected(store)
   if (ids.length === 0) return false
   clipboard = serializeNodes(store.getSnapshot(), ids)
+  pasteCount = 0
   data.setData('text/plain', JSON.stringify(clipboard))
   return true
 }
 
-/** Copy from a menu: there's no clipboard event to write into, so use the async API. */
-export function copyToClipboard(store: SceneStore) {
+/**
+ * Copy without a clipboard event (menus, and the keyboard path in case the
+ * browser doesn't deliver one): keeps an in-app copy and mirrors it to the
+ * system clipboard for other tabs.
+ */
+export function copyToClipboard(store: SceneStore): boolean {
   const ids = selected(store)
-  if (ids.length === 0) return
+  if (ids.length === 0) return false
   clipboard = serializeNodes(store.getSnapshot(), ids)
+  pasteCount = 0
   void navigator.clipboard?.writeText(JSON.stringify(clipboard)).catch(() => {})
+  return true
+}
+
+/** Ctrl/Cmd+V: if no paste event follows (focus quirks, blocked clipboard), paste the in-app copy. */
+export function armPasteFallback(store: SceneStore) {
+  pasteHandled = false
+  window.setTimeout(() => {
+    if (!pasteHandled && clipboard) pastePayload(store, clipboard)
+    pasteHandled = true
+  }, 60)
+}
+
+export function openExport() {
+  ui().setEditing(null)
+  ui().setExportOpen(true)
 }
 
 function payloadBounds(payload: ClipboardPayload) {
@@ -299,13 +358,17 @@ export function pasteAt(store: SceneStore, world: Point | null) {
 }
 
 export function pasteData(store: SceneStore, data: DataTransfer) {
+  pasteHandled = true
   const images = [...data.files].filter((f) => f.type.startsWith('image/'))
   if (images.length) {
     void placeImages(store, images)
     return
   }
   const text = data.getData('text/plain')
-  if (!text) return
+  if (!text) {
+    if (clipboard) pastePayload(store, clipboard)
+    return
+  }
   let parsed: unknown = null
   try {
     parsed = JSON.parse(text)
@@ -328,8 +391,11 @@ function pastePayload(store: SceneStore, payload: ClipboardPayload) {
   const bounds = payloadBounds(payload)
   const { viewport, canvasSize } = ui()
   const view = { ...screenToWorld(viewport, { x: 0, y: 0 }), width: canvasSize.width / viewport.zoom, height: canvasSize.height / viewport.zoom }
-  let offset = { x: 0, y: 0 }
-  if (bounds && !rectsIntersect(bounds, view)) {
+  // Step each paste down-right so a copy never hides exactly on top of its original.
+  pasteCount++
+  let offset = { x: 20 * pasteCount, y: 20 * pasteCount }
+  // An unmeasured canvas (0×0) has no view to be off-screen from.
+  if (bounds && canvasSize.width > 0 && canvasSize.height > 0 && !rectsIntersect(bounds, view)) {
     const center = viewportCenterWorld()
     offset = { x: Math.round(center.x - bounds.x - bounds.width / 2), y: Math.round(center.y - bounds.y - bounds.height / 2) }
   }

@@ -3,11 +3,24 @@
  * `npm install && npm run dev`, no manual fixes.
  */
 import { LIBRARY_NAME, npmDependencies, radii, registryClosure, SHADCN_REGISTRY, THEME_TOKEN_NAMES, themeVariables, type LibraryTheme } from '@codeframe/library'
-import { childrenOf, descendantsOf, MOTION_KEYFRAMES, type NodeId, type SceneSnapshot } from '@codeframe/scene'
+import {
+  childrenOf,
+  clipPlayback,
+  descendantsOf,
+  MOTION_KEYFRAMES,
+  scrollPlayback,
+  scrollTargets,
+  type FrameNode,
+  type NodeId,
+  type SceneNode,
+  type SceneSnapshot,
+} from '@codeframe/scene'
+import { camelCase, jsLiteral } from './literal'
 import { escapeHtml, kebabCase, pascalCase, unique } from './naming'
 import { renderPage, type SiteContext } from './page'
+import { MOTION_RUNTIME } from './runtime.generated'
 import { DEFAULT_RADII } from './tailwind'
-import { GITIGNORE, ROUTER_TSX, TSCONFIG, TSCONFIG_APP, TSCONFIG_NODE, UTILS_TS, VITE_CONFIG } from './templates'
+import { GITIGNORE, TSCONFIG, TSCONFIG_APP, TSCONFIG_NODE, UTILS_TS, VITE_CONFIG } from './templates'
 import { FONTS, VERSIONS } from './versions'
 
 export interface ExportInput {
@@ -47,6 +60,36 @@ function sortedObject(record: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)))
 }
 
+/**
+ * Frames whose layers need `data-cf-match`: both ends of every Smart Animate
+ * navigation, and for a Smart Animate "back", every frame that leads to it.
+ */
+function smartAnimateFrames(snap: SceneSnapshot, frames: readonly NodeId[]): Set<NodeId> {
+  const smart = new Set<NodeId>()
+  const arrivals = new Map<NodeId, Set<NodeId>>()
+  const backs = new Set<NodeId>()
+  for (const frame of frames) {
+    for (const id of [frame, ...descendantsOf(snap, frame)]) {
+      for (const ix of snap.nodes.get(id)!.interactions) {
+        for (const action of ix.actions) {
+          if ('target' in action && action.target) {
+            const from = arrivals.get(action.target) ?? new Set()
+            arrivals.set(action.target, from.add(frame))
+          }
+          if (!('transition' in action) || action.transition.type !== 'smart-animate') continue
+          if (action.type === 'back') backs.add(frame)
+          else if ('target' in action && action.target) smart.add(frame).add(action.target)
+        }
+      }
+    }
+  }
+  for (const frame of backs) {
+    smart.add(frame)
+    for (const from of arrivals.get(frame) ?? []) smart.add(from)
+  }
+  return smart
+}
+
 export async function exportProject(input: ExportInput, format: Formatter = async (source) => source): Promise<ExportedProject> {
   const snap = input.snapshot
   const frames = childrenOf(snap, null).filter((id) => {
@@ -56,6 +99,7 @@ export async function exportProject(input: ExportInput, format: Formatter = asyn
   if (frames.length === 0) throw new Error('Nothing to export yet: add a frame to the canvas.')
 
   const name = kebabCase(input.title) || 'codeframe-site'
+  const layersOf = (frame: NodeId): SceneNode[] => [frame, ...descendantsOf(snap, frame)].map((id) => snap.nodes.get(id)!)
 
   // Pages and routes. The first frame is the home page.
   const componentNames = new Set<string>()
@@ -68,13 +112,23 @@ export async function exportProject(input: ExportInput, format: Formatter = asyn
     routes.set(id, i === 0 ? unique('/', paths) : unique(`/${kebabCase(frameName) || 'page'}`, paths, '-'))
   })
 
+  // Layers the runtime looks up by `data-cf`: scroll-to targets, clip tracks, scroll effects.
+  const clipsByFrame = new Map(frames.map((f) => [f, [...snap.animations.values()].filter((clip) => clip.frameId === f)]))
+  const targeted = scrollTargets(frames.flatMap(layersOf))
+  for (const clips of clipsByFrame.values()) for (const clip of clips) for (const track of clip.tracks) targeted.add(track.nodeId)
+  for (const node of frames.flatMap(layersOf)) if (node.scroll || node.parallax) targeted.add(node.id)
+  const elementIds = new Map<NodeId, string>()
+  const usedIds = new Set<string>()
+  for (const node of frames.flatMap(layersOf)) {
+    if (targeted.has(node.id)) elementIds.set(node.id, unique(kebabCase(node.name) || 'layer', usedIds, '-'))
+  }
+
   // Images become files under public/.
   const files: ProjectFile[] = []
   const assets = new Map<string, string>()
   const assetNames = new Set<string>()
-  for (const id of frames.flatMap((f) => [f, ...descendantsOf(snap, f)])) {
-    const node = snap.nodes.get(id)
-    if (node?.type !== 'image' || !node.assetId || assets.has(node.assetId)) continue
+  for (const node of frames.flatMap(layersOf)) {
+    if (node.type !== 'image' || !node.assetId || assets.has(node.assetId)) continue
     const asset = snap.assets.get(node.assetId)
     const bytes = asset ? decodeDataUrl(asset.src) : null
     if (!asset || !bytes) continue
@@ -92,6 +146,8 @@ export async function exportProject(input: ExportInput, format: Formatter = asyn
     routes,
     assets,
     tailwind: { radii: usesLibrary ? { ...DEFAULT_RADII, sm: r.sm, md: r.md, lg: r.lg, xl: r.xl } : DEFAULT_RADII },
+    elementIds,
+    smartFrames: smartAnimateFrames(snap, frames),
     registry: new Set(),
     fonts: new Set(),
     usesMotion: false,
@@ -99,7 +155,25 @@ export async function exportProject(input: ExportInput, format: Formatter = asyn
 
   const pages = frames.map((id) => {
     const page = renderPage(id, pageNames.get(id)!, site)
-    return { id, ...page, file: `src/pages/${page.componentName}.tsx` }
+    const clips = clipsByFrame.get(id)!.map((clip) => {
+      const playback = clipPlayback(snap, clip)
+      return {
+        id: playback.id,
+        duration: playback.duration,
+        repeat: playback.repeat,
+        autoplay: playback.autoplay,
+        tracks: playback.tracks.flatMap((t) => {
+          const target = elementIds.get(t.nodeId)
+          return target ? [{ target, property: t.property, composite: t.composite, keyframes: t.keyframes }] : []
+        }),
+      }
+    })
+    const effects = layersOf(id).flatMap((node) => {
+      const target = elementIds.get(node.id)
+      return target ? scrollPlayback(node).map((effect) => ({ target, ...effect })) : []
+    })
+    const motion = clips.length || effects.length ? { clips, effects, alias: camelCase(page.componentName, 'page') } : null
+    return { id, ...page, file: `src/pages/${page.componentName}.tsx`, motion }
   })
   if (usesLibrary) site.fonts.add(input.theme.font)
 
@@ -163,18 +237,30 @@ export async function exportProject(input: ExportInput, format: Formatter = asyn
   }
   if (site.usesMotion) css.push('/* Appear and loop animations authored in Codeframe. */', MOTION_KEYFRAMES, '')
 
+  const sortedPages = [...pages].sort((a, b) => a.componentName.localeCompare(b.componentName))
   const app = [
-    `import { Router } from './router'`,
-    ...[...pages].sort((a, b) => a.componentName.localeCompare(b.componentName)).map((p) => `import ${p.componentName} from './pages/${p.componentName}'`),
+    `import { MotionRouter, type Screen } from './motion'`,
+    ...sortedPages.map((p) => `import ${p.componentName} from './pages/${p.componentName}'`),
+    ...sortedPages.flatMap((p) => {
+      if (!p.motion) return []
+      const names = [...(p.motion.clips.length ? [`clips as ${p.motion.alias}Clips`] : []), ...(p.motion.effects.length ? [`effects as ${p.motion.alias}Effects`] : [])]
+      return [`import { ${names.join(', ')} } from './pages/${p.componentName}.motion'`]
+    }),
     '',
-    'const routes = {',
-    ...pages.map((p) => `  '${routes.get(p.id)}': ${p.componentName},`),
+    'const screens: Record<string, Screen> = {',
+    ...pages.map((p) => {
+      const frame = snap.nodes.get(p.id) as FrameNode
+      const fields = [`component: ${p.componentName}`, `width: ${Math.round(frame.width)}`, `height: ${Math.round(frame.height)}`]
+      if (p.motion?.clips.length) fields.push(`clips: ${p.motion.alias}Clips`)
+      if (p.motion?.effects.length) fields.push(`effects: ${p.motion.alias}Effects`)
+      return `  '${routes.get(p.id)}': { ${fields.join(', ')} },`
+    }),
     '}',
     '',
     'export default function App() {',
     '  return (',
     '    <div className="min-h-screen overflow-x-clip bg-neutral-100 py-12">',
-    '      <Router routes={routes} />',
+    `      <MotionRouter screens={screens} home="/" />`,
     '    </div>',
     '  )',
     '}',
@@ -224,7 +310,11 @@ export async function exportProject(input: ExportInput, format: Formatter = asyn
     '',
     ...pages.map((p) => `- \`${routes.get(p.id)}\` → [${p.file}](${p.file})`),
     '',
-    'Prototype links navigate with `useNavigate()` from `src/router.tsx` (hash routing).',
+    '## Motion',
+    '',
+    'Interactions call `useMotion()` from [src/motion.tsx](src/motion.tsx), the Codeframe motion runtime: hash routing,',
+    'screen transitions (View Transitions API, including Smart Animate), overlays, scroll-to, timeline clips and',
+    'scroll effects. It depends only on React.',
     ...(registry.length
       ? ['', `## Components`, '', `\`src/components/ui\` holds ${LIBRARY_NAME} components (MIT). Re-theme them with the variables in \`src/index.css\`.`]
       : []),
@@ -243,10 +333,21 @@ export async function exportProject(input: ExportInput, format: Formatter = asyn
     { path: 'README.md', contents: readme },
     { path: 'src/main.tsx', contents: await format(main, 'babel-ts') },
     { path: 'src/App.tsx', contents: await format(app, 'babel-ts') },
-    { path: 'src/router.tsx', contents: await format(ROUTER_TSX, 'babel-ts') },
+    // Vendored verbatim, like the shadcn sources.
+    { path: 'src/motion.tsx', contents: MOTION_RUNTIME },
     { path: 'src/index.css', contents: await format(css.join('\n'), 'css') },
   )
-  for (const page of pages) files.push({ path: page.file, contents: await format(page.source, 'babel-ts') })
+  for (const page of pages) {
+    files.push({ path: page.file, contents: await format(page.source, 'babel-ts') })
+    if (!page.motion) continue
+    const module = [
+      `import type { ${[...(page.motion.clips.length ? ['Clip'] : []), ...(page.motion.effects.length ? ['ScrollEffect'] : [])].join(', ')} } from '@/motion'`,
+      '',
+      ...(page.motion.clips.length ? [`/** Timeline animations on "${page.componentName}". */`, `export const clips: Clip[] = ${jsLiteral(page.motion.clips)}`, ''] : []),
+      ...(page.motion.effects.length ? [`/** Scroll transforms and parallax. */`, `export const effects: ScrollEffect[] = ${jsLiteral(page.motion.effects)}`, ''] : []),
+    ].join('\n')
+    files.push({ path: `src/pages/${page.componentName}.motion.ts`, contents: await format(module, 'babel-ts') })
+  }
   if (registry.length) {
     files.push({ path: 'src/lib/utils.ts', contents: await format(UTILS_TS, 'babel-ts') })
     // Vendored as published upstream, formatting untouched.

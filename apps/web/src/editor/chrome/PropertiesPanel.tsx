@@ -2,6 +2,8 @@ import {
   addAsset,
   applyPatches,
   DEFAULT_SHADOW,
+  isStacked,
+  pinSizing,
   round2,
   TYPE_LABELS,
   worldBox,
@@ -32,16 +34,22 @@ import {
   Plus,
   type LucideIcon,
 } from 'lucide-react'
+import { getSpec, LIBRARY_NAME, resolveProps, type Props } from '@codeframe/library'
+import type { ComponentNode } from '@codeframe/scene'
 import { useState } from 'react'
 import { CONTENT_FONTS } from '../../fonts'
+import { constrainComponentPatches, setComponentProps } from '../library'
 import { alignSelection, distributeSelection } from '../commands'
 import { localPosition, setPosition, setRotation, setSize, textPatch } from '../edits'
 import { importImageFile } from '../images'
 import { useScene, useSceneStore } from '../scene-context'
+import { recordPatches } from '../timeline/record'
+import { recordTarget } from '../timeline/timeline-store'
 import { useUI, type PanelTab } from '../ui-store'
 import { AnimatePanel } from './AnimatePanel'
-import { ColorField, IconButton, NumberField, Section, Segmented, SelectField, Toggle } from './fields'
+import { ColorField, IconButton, NumberField, Section, Segmented, SelectField, TextField, Toggle } from './fields'
 import { Glyph } from './Glyph'
+import { AutoLayoutSection, ResizingSection } from './LayoutSection'
 import { ALT, MOD, SHIFT } from './keys'
 import { common, type Commit } from './values'
 
@@ -109,12 +117,20 @@ function PanelTabs() {
 
 function Inspector({ snap, nodes }: { snap: SceneSnapshot; nodes: SceneNode[] }) {
   const store = useSceneStore()
-  const commit: Commit = (patches, merge) => store.transact(() => applyPatches(store, patches), { merge })
+  // Recording on the timeline turns animatable edits into keyframes at the playhead.
+  const commit: Commit = (patches, merge) =>
+    store.transact(() => {
+      const target = recordTarget()
+      const clip = target ? store.getAnimation(target.clipId) : undefined
+      applyPatches(store, clip && target ? recordPatches(store, snap, clip, target.time, patches, merge) : patches)
+    }, { merge })
   // Geometry edits are computed from this render's snapshot; during a scrub that's
   // the gesture's starting state, so absolute values never compound.
   const each = (fn: (node: SceneNode, out: PatchMap) => void, merge: boolean) => {
     const out: PatchMap = new Map()
     for (const node of nodes) fn(node, out)
+    pinSizing(snap, out)
+    constrainComponentPatches(store, snap, out)
     commit(out, merge)
   }
   const single = nodes.length === 1 ? nodes[0] : null
@@ -124,6 +140,8 @@ function Inspector({ snap, nodes }: { snap: SceneSnapshot; nodes: SceneNode[] })
   const boxes = nodes.map((n) => worldBox(snap, n.id))
   const paintable = nodes.filter((n): n is Extract<SceneNode, { stroke: unknown }> => 'stroke' in n)
   const rounded = nodes.filter((n): n is Extract<SceneNode, { cornerRadius: number }> => 'cornerRadius' in n)
+  // A stack places its children; their X/Y are read-only.
+  const stacked = nodes.some((n) => isStacked(snap, n.id))
 
   return (
     <>
@@ -138,15 +156,21 @@ function Inspector({ snap, nodes }: { snap: SceneSnapshot; nodes: SceneNode[] })
 
       <AlignBar store={store} nodes={nodes} />
 
+      {only('component') && <ComponentSection store={store} nodes={nodes as ComponentNode[]} />}
+
       <Section title="Position">
         <div className="grid grid-cols-2 gap-x-3">
           <NumberField
             label="X"
+            title={stacked ? 'X, set by auto layout' : undefined}
+            disabled={stacked}
             value={common(positions.map((p) => p.x))}
             onChange={(v, merge) => each((n, out) => setPosition(snap, n.id, 'x', v, out), merge)}
           />
           <NumberField
             label="Y"
+            title={stacked ? 'Y, set by auto layout' : undefined}
+            disabled={stacked}
             value={common(positions.map((p) => p.y))}
             onChange={(v, merge) => each((n, out) => setPosition(snap, n.id, 'y', v, out), merge)}
           />
@@ -190,6 +214,11 @@ function Inspector({ snap, nodes }: { snap: SceneSnapshot; nodes: SceneNode[] })
         )}
       </Section>
 
+      {only('frame') && (
+        <AutoLayoutSection key={nodes.map((n) => n.id).join('|')} store={store} frames={nodes as FrameNode[]} commit={commit} />
+      )}
+      <ResizingSection store={store} snap={snap} nodes={nodes} commit={commit} />
+
       <Section title="Layer">
         <NumberField
           label="Opacity"
@@ -204,10 +233,77 @@ function Inspector({ snap, nodes }: { snap: SceneSnapshot; nodes: SceneNode[] })
       </Section>
 
       {paintable.length === nodes.length && <PaintSections nodes={paintable} commit={commit} />}
-      {!types.has('group') && <ShadowSection nodes={nodes} commit={commit} />}
+      {!types.has('group') && !types.has('component') && <ShadowSection nodes={nodes} commit={commit} />}
       {only('text') && <TypeSection nodes={nodes as TextNode[]} commit={commit} />}
       {only('image') && <ImageSection store={store} nodes={nodes as ImageNode[]} commit={commit} />}
     </>
+  )
+}
+
+/** Props of a library component, driven by its spec's control schema. */
+function ComponentSection({ store, nodes }: { store: SceneStore; nodes: ComponentNode[] }) {
+  const key = common(nodes.map((n) => n.component))
+  const spec = key ? getSpec(key) : undefined
+  if (!spec) {
+    return (
+      <Section title="Component">
+        <p className="text-caption text-ink-2">{key ? `Unknown component “${key}”.` : 'Different components selected.'}</p>
+      </Section>
+    )
+  }
+  const props = nodes.map(resolveProps)
+  const set = (patch: Props, merge = false) => setComponentProps(store, nodes, patch, merge)
+  return (
+    <Section title={spec.name} aside={<span className="smallcaps text-ink-3">{LIBRARY_NAME}</span>}>
+      <div className="flex flex-col gap-1">
+        {Object.entries(spec.controls).map(([name, control]) => {
+          const value = common(props.map((p) => p[name] ?? null))
+          switch (control.kind) {
+            case 'text':
+              return (
+                <TextField
+                  key={name}
+                  label={control.label}
+                  multiline={control.multiline}
+                  value={value === null ? null : String(value)}
+                  onChange={(v) => set({ [name]: v })}
+                />
+              )
+            case 'select':
+              return (
+                <SelectField
+                  key={name}
+                  label={control.label}
+                  value={value === null ? null : String(value)}
+                  options={control.options}
+                  onChange={(v) => set({ [name]: v })}
+                />
+              )
+            case 'boolean':
+              return <Toggle key={name} label={control.label} checked={value === null ? null : value === true} onChange={(v) => set({ [name]: v })} />
+            case 'number':
+              return (
+                <NumberField
+                  key={name}
+                  label={control.label}
+                  min={control.min}
+                  max={control.max}
+                  step={control.step}
+                  suffix={control.suffix}
+                  precision={0}
+                  value={typeof value === 'number' ? value : null}
+                  onChange={(v, merge) => set({ [name]: v }, merge)}
+                />
+              )
+          }
+        })}
+      </div>
+      {spec.resize !== 'both' && (
+        <p className="mt-2 text-caption leading-snug text-ink-3">
+          {spec.resize === 'none' ? 'Sized by its content.' : 'Width is yours; height follows the content.'}
+        </p>
+      )}
+    </Section>
   )
 }
 
@@ -494,6 +590,7 @@ const KEY_INDEX: [string, string][] = [
   ['Fit everything', `${SHIFT} 1`],
   ['Group', `${MOD} G`],
   ['Frame selection', `${MOD} ${ALT} G`],
+  ['Auto layout', `${SHIFT} A`],
   ['Duplicate', `${MOD} D  ·  ${ALT} drag`],
   ['Align left', `${ALT} A`],
   ['Move without snapping', `${MOD} drag`],

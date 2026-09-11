@@ -7,9 +7,11 @@ import { LayersPanel } from './editor/chrome/LayersPanel'
 import { Masthead } from './editor/chrome/Masthead'
 import { PropertiesPanel } from './editor/chrome/PropertiesPanel'
 import { pruneSelection } from './editor/commands'
+import { ExportDialog } from './editor/export/ExportDialog'
 import { PreviewOverlay } from './editor/preview/PreviewOverlay'
 import { SceneStoreProvider } from './editor/scene-context'
 import { useShortcuts } from './editor/shortcuts'
+import { TimelinePanel } from './editor/timeline/TimelinePanel'
 
 export function App({ store }: { store: SceneStore }) {
   useShortcuts(store)
@@ -31,10 +33,12 @@ export function App({ store }: { store: SceneStore }) {
           <Canvas />
           <PropertiesPanel />
         </div>
+        <TimelinePanel />
         <Colophon />
       </div>
       <ContextMenu />
       <PreviewOverlay />
+      <ExportDialog />
     </SceneStoreProvider>
   )
 }

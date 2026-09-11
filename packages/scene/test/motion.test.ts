@@ -4,6 +4,7 @@ import {
   alignNodes,
   childrenOf,
   createNode,
+  CURVE_PRESETS,
   distributeNodes,
   domLayout,
   getNodesMap,
@@ -11,13 +12,16 @@ import {
   motionCss,
   NODE_DEFAULTS,
   nodeCss,
+  normalizeInteractions,
   pasteNodes,
+  patchNode,
   readNode,
   SceneStore,
   serializeNodes,
   snapRect,
   snapTargets,
   subtreeStylesheet,
+  type Interaction,
   type NodeId,
   type NodePatch,
   type SceneNode,
@@ -45,10 +49,71 @@ describe('normalization of stored effects and motion', () => {
     const node = readNode(nodes.get('a')!)!
     expect(node.hover).toEqual({ opacity: 1 })
     expect(node.appear).toBeNull()
-    expect(node.transition).toEqual({ duration: 0, delay: 0, easing: 'ease-out' })
-    expect(node.link).toBeNull()
+    expect(node.transition).toEqual({ duration: 0, delay: 0, curve: CURVE_PRESETS['ease-out'] })
+    expect(node.interactions).toEqual([])
+    expect(Object.hasOwn(node, 'link')).toBe(false)
     expect(node.shadow).toEqual({ x: 2, y: 4, blur: 12, color: '#1A181433' })
     expect(Object.hasOwn(node, 'constructor')).toBe(false)
+  })
+
+  it('migrates motion v1 values: easing names, appear presets and the click link', () => {
+    const doc = new Y.Doc()
+    const nodes = getNodesMap(doc)
+    const y = new Y.Map<unknown>()
+    y.set('id', 'b')
+    y.set('type', 'rect')
+    y.set('transition', { duration: 180, delay: 0, easing: 'spring' })
+    y.set('appear', { preset: 'slide-up', duration: 700, delay: 120, easing: 'ease-out', distance: 28 })
+    y.set('loop', { preset: 'float', duration: 4000, easing: 'ease-in-out' })
+    y.set('link', { target: 'card', transition: 'push-left', duration: 520, easing: 'ease-in-out' })
+    nodes.set('b', y)
+
+    const node = readNode(nodes.get('b')!)!
+    expect(node.transition.curve).toEqual(CURVE_PRESETS['ease-out-back'])
+    expect(node.appear).toEqual({
+      from: { opacity: 0, y: 28 },
+      trigger: 'load',
+      once: true,
+      amount: 0.3,
+      timing: { duration: 700, delay: 120, curve: CURVE_PRESETS['ease-out'] },
+    })
+    expect(node.loop).toEqual({ preset: 'float', duration: 4000, curve: CURVE_PRESETS['ease-in-out'] })
+    expect(node.interactions).toEqual([
+      {
+        id: 'link',
+        trigger: { type: 'click', delay: 800, key: 'Enter' },
+        actions: [
+          { type: 'navigate', target: 'card', transition: { type: 'push', direction: 'left', timing: { duration: 520, delay: 0, curve: CURVE_PRESETS['ease-in-out'] } } },
+        ],
+      },
+    ])
+
+    // Writing interactions retires the v1 link.
+    doc.transact(() => patchNode(y, { interactions: [] }))
+    expect(y.has('link')).toBe(false)
+    expect(readNode(y)!.interactions).toEqual([])
+  })
+
+  it('validates interactions and keeps half-configured actions', () => {
+    const [ix] = normalizeInteractions([
+      {
+        trigger: { type: 'after-delay', delay: 1500 },
+        actions: [
+          { type: 'navigate' },
+          { type: 'open-url', url: 'javascript:alert(1)' },
+          { type: 'open-url', url: 'example.com/docs' },
+          { type: 'teleport' },
+          { type: 'overlay', target: 'menu', overlay: { position: 'top-right', background: null } },
+        ],
+      },
+    ])
+    expect(ix.id).toBe('ix0')
+    expect(ix.trigger).toEqual({ type: 'after-delay', delay: 1500, key: 'Enter' })
+    expect(ix.actions.map((a) => a.type)).toEqual(['navigate', 'open-url', 'open-url', 'overlay'])
+    expect(ix.actions[0]).toMatchObject({ target: '' })
+    expect(ix.actions[1]).toMatchObject({ url: '' })
+    expect(ix.actions[2]).toMatchObject({ url: 'https://example.com/docs', newTab: true })
+    expect(ix.actions[3]).toMatchObject({ overlay: { position: 'top-right', closeOnOutside: true, background: null } })
   })
 })
 
@@ -125,33 +190,46 @@ describe('scene → CSS', () => {
     const r2 = add(store, { x: 60, y: 40, width: 10, height: 10 }, frame)
     const g = groupNodes(store, [r1, r2])!
     const sheet = subtreeStylesheet(store.getSnapshot(), frame, (id) => `n-${id}`)
-    expect(sheet).toContain(`.n-${g}{position:absolute;left:30px;top:40px;width:40px;height:10px`)
+    expect(sheet).toContain(`.n-${g}{position:absolute;left:30px;top:40px;box-sizing:border-box;width:40px;height:10px`)
     expect(sheet).toContain(`.n-${r2}{position:absolute;left:30px;top:0px;`)
   })
 
   it('chains a loop after the appear animation', () => {
     const node = {
       ...NODE_DEFAULTS.rect,
-      appear: { preset: 'slide-up', duration: 600, delay: 100, easing: 'ease-out', distance: 24 },
-      loop: { preset: 'float', duration: 3000, easing: 'ease-in-out' },
+      appear: { from: { opacity: 0, y: 24 }, trigger: 'load', once: true, amount: 0.3, timing: { duration: 600, delay: 100, curve: CURVE_PRESETS['ease-out'] } },
+      loop: { preset: 'float', duration: 3000, curve: CURVE_PRESETS['ease-in-out'] },
     } as SceneNode
     expect(motionCss(node)).toEqual({
-      '--cf-distance': '24px',
-      animation:
-        'cf-appear-slide-up 600ms cubic-bezier(0, 0, 0.2, 1) 100ms backwards, cf-loop-float 3000ms cubic-bezier(0.4, 0, 0.2, 1) 700ms infinite',
+      '--cf-from-opacity': '0',
+      '--cf-from-y': '24px',
+      animation: 'cf-appear 600ms cubic-bezier(0, 0, 0.2, 1) 100ms backwards, cf-loop-float 3000ms cubic-bezier(0.4, 0, 0.2, 1) 700ms infinite',
     })
+  })
+
+  it('writes springs as linear() easings with their own duration', () => {
+    const quick = CURVE_PRESETS.quick
+    const node = { ...NODE_DEFAULTS.rect, hover: { scale: 1.05 }, transition: { duration: 200, delay: 0, curve: quick } } as SceneNode
+    const css = motionCss(node)
+    expect(css['transition-timing-function']).toMatch(/^linear\(0, /)
+    expect(css['transition-duration']).not.toBe('200ms')
   })
 })
 
-describe('prototype links', () => {
-  it('re-points links between frames that are pasted together', () => {
+describe('prototype interactions', () => {
+  it('re-points action targets between frames that are pasted together', () => {
     const store = new SceneStore()
     const home = add(store, { width: 100, height: 100 }, null, 'frame')
     const about = add(store, { x: 200, width: 100, height: 100 }, null, 'frame')
-    add(store, { link: { target: about, transition: 'dissolve', duration: 300, easing: 'ease-out' } }, home)
+    const navigate: Interaction = {
+      id: 'go',
+      trigger: { type: 'click', delay: 0, key: 'Enter' },
+      actions: [{ type: 'navigate', target: about, transition: { type: 'push', direction: 'left', timing: { duration: 300, delay: 0, curve: CURVE_PRESETS.gentle } } }],
+    }
+    add(store, { interactions: [navigate] }, home)
     const [homeCopy, aboutCopy] = pasteNodes(store, serializeNodes(store.getSnapshot(), [home, about]), null)
     const snap = store.getSnapshot()
     const button = snap.nodes.get(childrenOf(snap, homeCopy)[0])!
-    expect(button.link?.target).toBe(aboutCopy)
+    expect(button.interactions[0].actions[0]).toMatchObject({ type: 'navigate', target: aboutCopy })
   })
 })

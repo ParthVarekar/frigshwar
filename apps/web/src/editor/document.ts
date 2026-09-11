@@ -1,14 +1,20 @@
 import {
+  appearPresetState,
   createNode,
+  CURVE_PRESETS,
   NODE_DEFAULTS,
   newId,
   SceneStore,
-  type AppearAnimation,
+  type AppearPreset,
+  type Direction,
+  type Interaction,
   type NodeId,
   type NodePatch,
   type NodeType,
   type Shadow,
   type TextNode,
+  type Timing,
+  type TransitionType,
 } from '@codeframe/scene'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
@@ -45,11 +51,21 @@ function seedDocument(store: SceneStore) {
     return add('text', parentId, name, { ...props, ...measureText(node), ...extra })
   }
 
-  const appear = (preset: AppearAnimation['preset'], delay: number, duration = 700): NodePatch => ({
-    appear: { preset, delay, duration, easing: 'ease-out', distance: 28 },
+  const appear = (preset: AppearPreset, delay: number, duration = 700): NodePatch => ({
+    appear: { from: appearPresetState(preset, 28), trigger: 'load', once: true, amount: 0.3, timing: { duration, delay, curve: CURVE_PRESETS['ease-out'] } },
   })
+  const goTo = (target: NodeId | 'back', type: TransitionType, direction: Direction): Interaction[] => {
+    const transition = { type, direction, timing: { duration: 520, delay: 0, curve: CURVE_PRESETS['ease-in-out'] } }
+    return [
+      {
+        id: newId(),
+        trigger: { type: 'click', delay: 0, key: 'Enter' },
+        actions: [target === 'back' ? { type: 'back', transition } : { type: 'navigate', target, transition }],
+      },
+    ]
+  }
   const lift: Shadow = { x: 0, y: 12, blur: 28, color: '#D4441C40' }
-  const quick = { duration: 160, delay: 0, easing: 'ease-out' } as const
+  const quick: Timing = { duration: 160, delay: 0, curve: CURVE_PRESETS['ease-out'] }
   const cardId = newId()
 
   const landing = add('frame', null, 'Landing', {
@@ -116,8 +132,8 @@ function seedDocument(store: SceneStore) {
     ...appear('slide-up', 240),
     hover: { scale: 1.04, y: -2, shadow: lift },
     press: { scale: 0.97, y: 0 },
-    transition: { duration: 180, delay: 0, easing: 'spring' },
-    link: { target: cardId, transition: 'push-left', duration: 520, easing: 'ease-in-out' },
+    transition: { duration: 180, delay: 0, curve: CURVE_PRESETS.quick },
+    interactions: goTo(cardId, 'push', 'left'),
   })
   text(cta, 'Label', { x: 32, y: 14, text: 'Start a draft', fontSize: 17, fontWeight: 600, fill: '#FFFFFF' })
   add('rect', landing, 'Hero image', {
@@ -136,7 +152,7 @@ function seedDocument(store: SceneStore) {
     height: 260,
     fill: '#F2B64C',
     ...appear('fade', 400, 800),
-    loop: { preset: 'float', duration: 4000, easing: 'ease-in-out' },
+    loop: { preset: 'float', duration: 4000, curve: CURVE_PRESETS['ease-in-out'] },
   })
 
   const card = add(
@@ -169,6 +185,6 @@ function seedDocument(store: SceneStore) {
     card,
     'Back link',
     { x: 278, y: 390, text: '← Back', fontSize: 14, fontWeight: 500, fill: '#D4441C' },
-    { hover: { opacity: 0.6 }, transition: quick, link: { target: 'back', transition: 'push-right', duration: 520, easing: 'ease-in-out' } },
+    { hover: { opacity: 0.6 }, transition: quick, interactions: goTo('back', 'push', 'right') },
   )
 }

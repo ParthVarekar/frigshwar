@@ -1,9 +1,11 @@
-import { isContainerType, type AssetRecord, type NodeId, type SceneNode } from './types'
+import { applyAutoLayout } from './layout'
+import { isContainerType, type AnimationClip, type AssetRecord, type NodeId, type SceneNode } from './types'
 
 /** Key under which canvas-level nodes are listed in `children`. Not a valid node id. */
 export const ROOT = '#root'
 
 const EMPTY: readonly NodeId[] = Object.freeze([])
+const NO_ANIMATIONS: ReadonlyMap<string, AnimationClip> = new Map()
 
 /** Immutable, derived view of the document. Rebuilt after every Yjs transaction. */
 export interface SceneSnapshot {
@@ -15,6 +17,8 @@ export interface SceneSnapshot {
   /** Global paint order (depth-first pre-order). Higher paints later. */
   readonly order: ReadonlyMap<NodeId, number>
   readonly assets: ReadonlyMap<string, AssetRecord>
+  /** Timeline clips by id. */
+  readonly animations: ReadonlyMap<string, AnimationClip>
 }
 
 /**
@@ -29,6 +33,7 @@ export function buildSnapshot(
   nodes: ReadonlyMap<NodeId, SceneNode>,
   assets: ReadonlyMap<string, AssetRecord>,
   previous?: SceneSnapshot,
+  animations: ReadonlyMap<string, AnimationClip> = previous?.animations ?? NO_ANIMATIONS,
 ): SceneSnapshot {
   const parents = new Map<NodeId, NodeId | null>()
   for (const node of nodes.values()) {
@@ -84,7 +89,9 @@ export function buildSnapshot(
   }
   visit(ROOT)
 
-  return { nodes, children, parents, order, assets }
+  // Auto-layout positions and sizes are derived, like group bounds.
+  const laidOut = applyAutoLayout(nodes, (id) => children.get(id) ?? EMPTY, (id) => parents.get(id) ?? null)
+  return { nodes: laidOut, children, parents, order, assets, animations }
 }
 
 function compareSiblings(a: SceneNode, b: SceneNode): number {
