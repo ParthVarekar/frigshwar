@@ -20,6 +20,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/assets/intro.mp4"><b>Watch the intro</b></a> ·
   <a href="#run-it"><b>Run it</b></a> ·
   <a href="#whats-in-the-editor"><b>The editor</b></a> ·
   <a href="#how-it-works"><b>How it works</b></a> ·
