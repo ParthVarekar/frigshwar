@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" role="img" aria-label="Codeframe: Design on a canvas. Ship real React + Tailwind.">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6f1e7"/><stop offset="1" stop-color="#e7e0d0"/></linearGradient>
+    <radialGradient id="glow" cx="0.82" cy="0.2" r="0.6"><stop offset="0" stop-color="#d4441c" stop-opacity="0.35"/><stop offset="1" stop-color="#d4441c" stop-opacity="0"/></radialGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.4" fill="#1a1814" fill-opacity="0.10"/></pattern>
+  </defs>
+  <rect width="1280" height="360" rx="20" fill="url(#g)"/>
+  <rect width="1280" height="360" rx="20" fill="url(#dots)"/>
+  <rect width="1280" height="360" rx="20" fill="url(#glow)"/>
+  <g fill="none" stroke="#d4441c" stroke-opacity="0.55" stroke-width="2">
+    <circle cx="1040" cy="180" r="60"/><circle cx="1040" cy="180" r="110" stroke-opacity="0.35"/><circle cx="1040" cy="180" r="160" stroke-opacity="0.2"/>
+  </g>
+  <circle cx="1040" cy="180" r="8" fill="#d4441c"/>
+  <text x="80" y="188" font-family="Inter,'Segoe UI',Helvetica,Arial,sans-serif" font-size="92" font-weight="800" letter-spacing="-3" fill="#1a1814">Codeframe</text>
+  <rect x="84" y="214" width="64" height="5" rx="2.5" fill="#d4441c"/>
+  <text x="82" y="266" font-family="Inter,'Segoe UI',Helvetica,Arial,sans-serif" font-size="27" fill="#1a1814" fill-opacity="0.78">Design on a canvas. Ship real React + Tailwind.</text>
+</svg>
